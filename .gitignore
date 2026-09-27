@@ -1,0 +1,21 @@
+# Xcode / Apple
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+DerivedData/
+build/
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Node / Server
+node_modules/
+npm-debug.log*
+server/data/*
+!server/data/.gitkeep
+
+# OS / Editor
+.DS_Store
+.vscode/
+*.swp
+*~

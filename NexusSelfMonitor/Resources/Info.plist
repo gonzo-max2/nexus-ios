@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleDisplayName</key><string>Self-Monitor</string>
+  <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
+  <key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+  <key>CFBundleName</key><string>$(PRODUCT_NAME)</string>
+  <key>CFBundlePackageType</key><string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+  <key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
+  <key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
+  <key>LSRequiresIPhoneOS</key><true/>
+  <key>UILaunchScreen</key><dict/>
+  <key>UISupportedInterfaceOrientations</key>
+  <array>
+    <string>UIInterfaceOrientationPortrait</string>
+  </array>
+
+  <!-- Transparency: these strings are shown verbatim in the OS permission prompts. -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Self-Monitor records YOUR OWN audio only while you have it running, with a visible on-screen indicator and the iOS orange microphone dot. Recording never happens silently.</string>
+  <key>NSLocationWhenInUseUsageDescription</key>
+  <string>Self-Monitor tags your own recordings with your location so you can see your route on your dashboard.</string>
+  <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+  <string>Enable background location only if you want your worn device to keep logging your own position while the screen is off. iOS shows a status indicator the whole time.</string>
+  <key>NSCameraUsageDescription</key>
+  <string>Self-Monitor can capture photos from YOUR OWN device camera and stream them to your dashboard, only while a session is running with a visible on-screen indicator.</string>
+  <key>NSMotionUsageDescription</key>
+  <string>Self-Monitor uses motion sensors (accelerometer, gyroscope, pedometer) to stream device telemetry to your dashboard while a session is active.</string>
+
+  <!-- audio: keep recording your own audio while worn/backgrounded (OS forces the mic indicator on).
+       location: optional background location for the worn use case. -->
+  <key>UIBackgroundModes</key>
+  <array>
+    <string>audio</string>
+    <string>location</string>
+  </array>
+</dict>
+</plist>

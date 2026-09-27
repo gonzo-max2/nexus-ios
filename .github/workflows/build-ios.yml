@@ -1,0 +1,67 @@
+name: Build iOS App
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build NexusSelfMonitor (iOS)
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Select Xcode Version
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode Project
+        working-directory: NexusSelfMonitor
+        run: xcodegen generate
+
+      - name: Build for iOS Simulator (iPhone 15)
+        working-directory: NexusSelfMonitor
+        run: |
+          xcodebuild build \
+            -project NexusSelfMonitor.xcodeproj \
+            -scheme NexusSelfMonitor \
+            -destination 'generic/platform=iOS Simulator' \
+            -configuration Release \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Build Unsigned Generic iOS Device Archive (.app)
+        working-directory: NexusSelfMonitor
+        run: |
+          xcodebuild build \
+            -project NexusSelfMonitor.xcodeproj \
+            -scheme NexusSelfMonitor \
+            -destination 'generic/platform=iOS' \
+            -configuration Release \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            SYMROOT=build
+
+      - name: Package Payload into Unsigned IPA
+        working-directory: NexusSelfMonitor
+        run: |
+          mkdir -p build/Payload
+          cp -r build/Release-iphoneos/NexusSelfMonitor.app build/Payload/
+          cd build && zip -r NexusSelfMonitor-unsigned.ipa Payload
+          cd ..
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NexusSelfMonitor-unsigned-ipa
+          path: NexusSelfMonitor/build/NexusSelfMonitor-unsigned.ipa
+          retention-days: 14

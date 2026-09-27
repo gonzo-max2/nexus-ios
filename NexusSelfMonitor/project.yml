@@ -1,0 +1,32 @@
+# XcodeGen spec — generates NexusSelfMonitor.xcodeproj reproducibly.
+#   brew install xcodegen && xcodegen generate
+name: NexusSelfMonitor
+options:
+  bundleIdPrefix: com.nexus.selfmonitor
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    # For on-device builds set your 10-char Team ID (Xcode > Settings > Accounts).
+    # Leave empty to build for the Simulator without signing.
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+targets:
+  NexusSelfMonitor:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Resources
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nexus.selfmonitor.app
+        INFOPLIST_FILE: Resources/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1"
+        ENABLE_PREVIEWS: YES

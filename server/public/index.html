@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Nexus Self-Monitor — Live Dashboard</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  :root { color-scheme: dark; --bg:#0a0c10; --panel:#12151c; --card:#171b25;
+          --line:#1e2330; --text:#e2e6ee; --muted:#7c8598; --accent:#ff5a3c;
+          --ok:#2dd47a; --warn:#f5a623; --blue:#3b8bff; --purple:#a855f7; }
+  * { box-sizing: border-box; margin:0; }
+  body { font:13px/1.5 'Inter',system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+         background:var(--bg); color:var(--text); overflow:hidden; }
+
+  /* Header */
+  header { display:flex; align-items:center; gap:10px; padding:10px 16px;
+           border-bottom:1px solid var(--line); background:var(--panel);
+           backdrop-filter:blur(12px); z-index:10; }
+  header h1 { font-size:14px; font-weight:700; letter-spacing:.3px; }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--muted); flex-shrink:0; }
+  .dot.live { background:var(--accent); box-shadow:0 0 0 0 rgba(255,90,60,.5); animation:pulse 1.8s infinite; }
+  @keyframes pulse { 0%,100%{box-shadow:0 0 0 0 rgba(255,90,60,0)} 50%{box-shadow:0 0 0 8px rgba(255,90,60,0)} }
+  .badge { font-size:10px; padding:2px 8px; border-radius:999px; border:1px solid var(--line);
+           color:var(--muted); font-weight:500; letter-spacing:.3px; text-transform:uppercase; }
+  .badge.on { color:var(--accent); border-color:var(--accent); }
+  .badge.ok { color:var(--ok); border-color:var(--ok); }
+
+  /* Layout: 3-column grid */
+  .layout { display:grid; grid-template-columns:320px 1fr 340px;
+            height:calc(100vh - 45px); gap:0; }
+  @media (max-width:1100px) { .layout { grid-template-columns:280px 1fr; }
+    .right-panel { display:none; } }
+  @media (max-width:720px) { .layout { grid-template-columns:1fr; height:auto; }
+    #map { height:45vh; } }
+
+  /* Panels */
+  .left-panel { border-right:1px solid var(--line); overflow-y:auto; padding:12px;
+                background:var(--panel); }
+  .right-panel { border-left:1px solid var(--line); overflow-y:auto; padding:12px;
+                 background:var(--panel); }
+  #map { width:100%; height:100%; }
+
+  /* Cards */
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px;
+          padding:10px 12px; margin-bottom:10px; }
+  .card-title { display:flex; align-items:center; gap:6px; margin-bottom:6px;
+                font-size:11px; font-weight:600; text-transform:uppercase;
+                letter-spacing:.6px; color:var(--muted); }
+  .card-title .icon { font-size:13px; }
+
+  /* KV rows */
+  .kv { display:flex; justify-content:space-between; gap:8px; padding:2px 0;
+        font-size:12px; }
+  .kv .label { color:var(--muted); }
+  .kv .value { font-weight:500; text-align:right; }
+  .muted { color:var(--muted); }
+
+  /* Device cards */
+  .dev-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; }
+  .dev-name { font-weight:600; font-size:13px; }
+
+  /* Audio player */
+  audio { width:100%; height:32px; margin-top:6px; border-radius:6px; }
+  label.toggle { display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; }
+  input[type=checkbox] { accent-color:var(--accent); }
+
+  /* Photo gallery */
+  .photo-grid { display:grid; grid-template-columns:repeat(3, 1fr); gap:4px; margin-top:6px; }
+  .photo-grid img { width:100%; aspect-ratio:4/3; object-fit:cover; border-radius:6px;
+                    cursor:pointer; border:1px solid var(--line); transition:transform .15s; }
+  .photo-grid img:hover { transform:scale(1.04); border-color:var(--blue); }
+
+  /* Sensor gauges */
+  .gauge-row { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:4px; }
+  .gauge { text-align:center; padding:8px 4px; background:var(--bg); border-radius:8px; }
+  .gauge .val { font-size:20px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .gauge .lbl { font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.4px; }
+
+  /* Timeline */
+  .timeline { max-height:200px; overflow-y:auto; }
+  .tl-entry { display:flex; align-items:center; gap:8px; padding:3px 0;
+              border-bottom:1px dashed var(--line); font-size:11px; }
+  .tl-entry .tl-time { color:var(--muted); flex-shrink:0; width:60px; font-variant-numeric:tabular-nums; }
+  .tl-entry .tl-icon { font-size:14px; flex-shrink:0; }
+  .tl-entry .tl-text { flex:1; }
+
+  /* Log */
+  #log { font:11px/1.4 'SF Mono','Fira Code',ui-monospace,monospace; max-height:180px; overflow:auto; }
+  #log div { padding:2px 0; border-bottom:1px dashed var(--line); }
+
+  /* Buttons */
+  button { font:inherit; color:var(--text); background:var(--card); border:1px solid var(--line);
+           border-radius:6px; padding:5px 10px; cursor:pointer; font-size:11px; transition:.15s; }
+  button:hover { border-color:#3a4252; background:#1e2330; }
+  button.danger { border-color:#5a2a2a; color:#ff8a7a; }
+  button.danger:hover { background:#2a1515; }
+
+  /* Lightbox */
+  .lightbox { position:fixed; inset:0; background:rgba(0,0,0,.85); z-index:100;
+              display:none; align-items:center; justify-content:center; cursor:zoom-out; }
+  .lightbox.show { display:flex; }
+  .lightbox img { max-width:90vw; max-height:90vh; border-radius:8px; }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width:5px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  ::-webkit-scrollbar-thumb { background:var(--line); border-radius:3px; }
+</style>
+</head>
+<body>
+
+<header>
+  <span id="statusDot" class="dot"></span>
+  <h1>Nexus Self-Monitor</h1>
+  <span style="flex:1"></span>
+  <span id="conn" class="badge">connecting…</span>
+  <span id="uptime" class="badge" style="display:none"></span>
+</header>
+
+<div class="layout">
+  <!-- LEFT PANEL -->
+  <div class="left-panel">
+    <!-- Audio Player -->
+    <div class="card">
+      <div class="card-title"><span class="icon">🎙️</span> Live Audio</div>
+      <label class="toggle"><input type="checkbox" id="autoplay" checked /> Auto-play incoming</label>
+      <audio id="player" controls preload="none"></audio>
+      <div class="muted" id="nowPlaying" style="margin-top:4px;font-size:11px;">Waiting for audio…</div>
+    </div>
+
+    <!-- Devices -->
+    <div class="card">
+      <div class="card-title"><span class="icon">📱</span> Devices <span id="devCount" style="margin-left:auto;color:var(--text);">0</span></div>
+      <div id="devices"></div>
+    </div>
+
+    <!-- Event Log -->
+    <div class="card">
+      <div class="card-title"><span class="icon">📋</span> Event Log</div>
+      <div id="log"></div>
+    </div>
+  </div>
+
+  <!-- MAP -->
+  <div id="map"></div>
+
+  <!-- RIGHT PANEL -->
+  <div class="right-panel">
+    <!-- Sensor Telemetry -->
+    <div class="card" id="telemetryCard" style="display:none;">
+      <div class="card-title"><span class="icon">📡</span> Live Telemetry</div>
+      <div class="gauge-row">
+        <div class="gauge"><div class="val" id="gBattery">—</div><div class="lbl">Battery</div></div>
+        <div class="gauge"><div class="val" id="gSteps">—</div><div class="lbl">Steps</div></div>
+      </div>
+      <div class="gauge-row" style="margin-top:6px;">
+        <div class="gauge"><div class="val" id="gPressure">—</div><div class="lbl">Pressure kPa</div></div>
+        <div class="gauge"><div class="val" id="gAltitude">—</div><div class="lbl">Rel. Alt m</div></div>
+      </div>
+      <div style="margin-top:8px;" id="accelData"></div>
+    </div>
+
+    <!-- Photo Gallery -->
+    <div class="card">
+      <div class="card-title"><span class="icon">📸</span> Photos <span id="photoCount" style="margin-left:auto;color:var(--text);">0</span></div>
+      <div class="photo-grid" id="photoGrid"></div>
+      <div class="muted" id="noPhotos" style="font-size:11px;margin-top:4px;">No photos captured yet.</div>
+    </div>
+
+    <!-- Timeline -->
+    <div class="card">
+      <div class="card-title"><span class="icon">⏱️</span> Timeline</div>
+      <div class="timeline" id="timeline"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Lightbox -->
+<div class="lightbox" id="lightbox" onclick="this.classList.remove('show')">
+  <img id="lightboxImg" src="" />
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+'use strict';
+const map = L.map('map', { zoomControl: true }).setView([42.6977, 23.3219], 12);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  maxZoom: 19,
+  attribution: '© OpenStreetMap © CARTO'
+}).addTo(map);
+
+const markers = {};
+const trails = {};            // deviceId -> L.polyline
+const devicesState = {};
+const audioQueue = [];
+const photos = [];             // {url, deviceName, time}
+let playing = false;
+
+const $ = (id) => document.getElementById(id);
+
+function log(msg, icon) {
+  const d = document.createElement('div');
+  d.textContent = (icon ? icon + ' ' : '') + new Date().toLocaleTimeString() + '  ' + msg;
+  $('log').prepend(d);
+  // Keep log bounded
+  while ($('log').children.length > 200) $('log').lastChild.remove();
+}
+
+function addTimeline(icon, text) {
+  const el = document.createElement('div');
+  el.className = 'tl-entry';
+  el.innerHTML = `<span class="tl-time">${new Date().toLocaleTimeString()}</span>
+    <span class="tl-icon">${icon}</span><span class="tl-text">${escapeHtml(text)}</span>`;
+  $('timeline').prepend(el);
+  while ($('timeline').children.length > 100) $('timeline').lastChild.remove();
+}
+
+function renderDevices() {
+  const ids = Object.keys(devicesState);
+  $('devCount').textContent = ids.length;
+  $('devices').innerHTML = '';
+  for (const id of ids) {
+    const d = devicesState[id];
+    const el = document.createElement('div');
+    const live = d.activeSessions > 0;
+    el.style.cssText = 'margin-bottom:8px;';
+    el.innerHTML = `
+      <div class="dev-header">
+        <span class="dev-name">${escapeHtml(d.deviceName || id)}</span>
+        <span class="badge ${live ? 'on' : ''}">${live ? '● live' : 'idle'}</span>
+      </div>
+      <div class="kv"><span class="label">segments</span><span class="value">${d.segmentCount || 0}</span></div>
+      <div class="kv"><span class="label">last seen</span><span class="value">${d.lastSeenAt ? new Date(d.lastSeenAt).toLocaleTimeString() : '—'}</span></div>
+      ${d.lastLocation ? `<div class="kv"><span class="label">position</span><span class="value">${d.lastLocation.lat.toFixed(5)}, ${d.lastLocation.lng.toFixed(5)}</span></div>` : ''}
+      ${d.lastTelemetry?.battery ? `<div class="kv"><span class="label">battery</span><span class="value">${Math.round((d.lastTelemetry.battery.level || 0) * 100)}%</span></div>` : ''}
+      <button class="danger" data-del="${escapeAttr(id)}" style="margin-top:6px;width:100%;">Delete device data</button>
+    `;
+    $('devices').appendChild(el);
+  }
+  document.querySelectorAll('[data-del]').forEach((b) => {
+    b.onclick = () => deleteDevice(b.getAttribute('data-del'));
+  });
+}
+
+function upsertMarker(deviceId, name, lat, lng) {
+  // Update or create marker
+  if (markers[deviceId]) {
+    markers[deviceId].setLatLng([lat, lng]);
+  } else {
+    const icon = L.divIcon({
+      className: '',
+      html: `<div style="width:14px;height:14px;background:var(--accent);border:2px solid #fff;border-radius:50%;box-shadow:0 0 8px rgba(255,90,60,.5);"></div>`,
+      iconSize: [14, 14], iconAnchor: [7, 7]
+    });
+    markers[deviceId] = L.marker([lat, lng], { icon }).addTo(map)
+      .bindPopup(`<strong>${escapeHtml(name || deviceId)}</strong>`);
+  }
+  // Update trail
+  if (!trails[deviceId]) {
+    trails[deviceId] = L.polyline([], {
+      color: '#ff5a3c', weight: 2, opacity: 0.6, dashArray: '4 6'
+    }).addTo(map);
+  }
+  trails[deviceId].addLatLng([lat, lng]);
+}
+
+async function deleteDevice(id) {
+  if (!confirm('Permanently delete ALL stored data for this device?')) return;
+  await fetch('/api/v1/device/' + encodeURIComponent(id), { method: 'DELETE' });
+  delete devicesState[id];
+  if (markers[id]) { map.removeLayer(markers[id]); delete markers[id]; }
+  if (trails[id]) { map.removeLayer(trails[id]); delete trails[id]; }
+  renderDevices();
+  log('deleted device ' + id, '🗑️');
+  addTimeline('🗑️', 'Device deleted');
+}
+
+// Audio
+function enqueueAudio(meta) {
+  audioQueue.push(meta);
+  if ($('autoplay').checked) playNext();
+}
+function playNext() {
+  if (playing || audioQueue.length === 0) return;
+  const meta = audioQueue.shift();
+  const player = $('player');
+  playing = true;
+  player.src = meta.url;
+  $('nowPlaying').textContent = `▶ ${meta.deviceName || meta.deviceId} · seg ${meta.seq}`;
+  player.play().catch(() => { playing = false; });
+  player.onended = () => { playing = false; playNext(); };
+}
+
+// Photos
+function addPhoto(meta) {
+  if (meta.kind !== 'photo') return;
+  photos.unshift(meta);
+  $('noPhotos').style.display = 'none';
+  $('photoCount').textContent = photos.length;
+  const img = document.createElement('img');
+  img.src = meta.url;
+  img.alt = `Photo from ${meta.deviceName || meta.deviceId}`;
+  img.title = `${new Date(meta.receivedAt || Date.now()).toLocaleTimeString()} · ${(meta.bytes/1024).toFixed(0)} KB`;
+  img.onclick = () => { $('lightboxImg').src = meta.url; $('lightbox').classList.add('show'); };
+  $('photoGrid').prepend(img);
+  // Cap gallery at 30 thumbnails
+  while ($('photoGrid').children.length > 30) $('photoGrid').lastChild.remove();
+}
+
+// Telemetry
+function updateTelemetry(t) {
+  $('telemetryCard').style.display = '';
+  if (t.battery) {
+    const pct = Math.round((t.battery.level || 0) * 100);
+    $('gBattery').textContent = pct >= 0 ? pct + '%' : '—';
+    $('gBattery').style.color = pct < 20 ? 'var(--accent)' : pct < 50 ? 'var(--warn)' : 'var(--ok)';
+  }
+  if (typeof t.steps === 'number') $('gSteps').textContent = t.steps.toLocaleString();
+  if (typeof t.pressure === 'number' && t.pressure > 0) $('gPressure').textContent = t.pressure.toFixed(1);
+  if (t.motion?.relativeAltitude !== undefined) $('gAltitude').textContent = t.motion.relativeAltitude.toFixed(1);
+  if (t.sensors?.accelerometer) {
+    const a = t.sensors.accelerometer;
+    $('accelData').innerHTML = `<div class="kv"><span class="label">Accel</span>
+      <span class="value" style="font-variant-numeric:tabular-nums;">
+      x:${a.x.toFixed(2)} y:${a.y.toFixed(2)} z:${a.z.toFixed(2)}</span></div>`;
+  }
+}
+
+function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function escapeAttr(s) { return escapeHtml(s); }
+
+// ---- SSE ----
+function connect() {
+  const es = new EventSource('/api/v1/events');
+  es.addEventListener('hello', (e) => {
+    const { devices } = JSON.parse(e.data);
+    for (const d of devices) {
+      devicesState[d.deviceId] = d;
+      if (d.lastLocation) upsertMarker(d.deviceId, d.deviceName, d.lastLocation.lat, d.lastLocation.lng);
+      if (d.lastTelemetry) updateTelemetry(d.lastTelemetry);
+      // Load existing media into gallery
+      if (d.segments) {
+        for (const seg of d.segments) {
+          if (seg.kind === 'photo') addPhoto({ ...seg, deviceName: d.deviceName, deviceId: d.deviceId });
+        }
+      }
+    }
+    renderDevices();
+    $('conn').textContent = 'connected';
+    $('conn').classList.add('ok');
+    $('statusDot').classList.add('live');
+    log('Dashboard connected', '🟢');
+    addTimeline('🟢', 'Dashboard connected');
+  });
+
+  es.addEventListener('session', (e) => {
+    const d = JSON.parse(e.data);
+    devicesState[d.deviceId] = devicesState[d.deviceId] || { deviceId: d.deviceId };
+    devicesState[d.deviceId].deviceName = d.deviceName;
+    devicesState[d.deviceId].activeSessions = (devicesState[d.deviceId].activeSessions || 0) + 1;
+    devicesState[d.deviceId].lastSeenAt = Date.now();
+    renderDevices();
+    log('session started · ' + (d.deviceName || d.deviceId), '▶️');
+    addTimeline('▶️', 'Session started · ' + (d.deviceName || d.deviceId));
+  });
+
+  es.addEventListener('location', (e) => {
+    const d = JSON.parse(e.data);
+    const rec = devicesState[d.deviceId] = devicesState[d.deviceId] || { deviceId: d.deviceId, deviceName: d.deviceName };
+    rec.lastLocation = { lat: d.lat, lng: d.lng }; rec.lastSeenAt = Date.now();
+    upsertMarker(d.deviceId, d.deviceName, d.lat, d.lng);
+    if (Object.keys(markers).length === 1) map.setView([d.lat, d.lng], 15);
+    renderDevices();
+  });
+
+  es.addEventListener('media', (e) => {
+    const meta = JSON.parse(e.data);
+    const rec = devicesState[meta.deviceId] = devicesState[meta.deviceId] || { deviceId: meta.deviceId, deviceName: meta.deviceName };
+    rec.segmentCount = (rec.segmentCount || 0) + 1;
+    rec.lastSeenAt = Date.now();
+    renderDevices();
+
+    if (meta.kind === 'audio') {
+      log(`audio seg ${meta.seq} · ${(meta.bytes/1024).toFixed(0)} KB`, '🎙️');
+      addTimeline('🎙️', `Audio seg ${meta.seq} · ${(meta.bytes/1024).toFixed(0)} KB`);
+      enqueueAudio(meta);
+    } else if (meta.kind === 'photo') {
+      log(`photo ${meta.seq} · ${(meta.bytes/1024).toFixed(0)} KB`, '📸');
+      addTimeline('📸', `Photo captured · ${(meta.bytes/1024).toFixed(0)} KB`);
+      addPhoto(meta);
+    } else if (meta.kind === 'video') {
+      log(`video seg ${meta.seq} · ${(meta.bytes/1024).toFixed(0)} KB`, '🎬');
+      addTimeline('🎬', `Video seg ${meta.seq}`);
+    }
+  });
+
+  // Legacy audio event (for backward compat with older iOS clients)
+  es.addEventListener('audio', (e) => {
+    const meta = JSON.parse(e.data);
+    const rec = devicesState[meta.deviceId] = devicesState[meta.deviceId] || { deviceId: meta.deviceId, deviceName: meta.deviceName };
+    rec.segmentCount = (rec.segmentCount || 0) + 1; rec.lastSeenAt = Date.now();
+    renderDevices();
+    log(`audio seg ${meta.seq} · ${(meta.bytes/1024).toFixed(0)} KB`, '🎙️');
+    addTimeline('🎙️', `Audio seg ${meta.seq}`);
+    enqueueAudio(meta);
+  });
+
+  es.addEventListener('telemetry', (e) => {
+    const t = JSON.parse(e.data);
+    if (t.deviceId && devicesState[t.deviceId]) {
+      devicesState[t.deviceId].lastTelemetry = t;
+      renderDevices();
+    }
+    updateTelemetry(t);
+  });
+
+  es.addEventListener('stopped', (e) => {
+    log('session stopped', '⏹️');
+    addTimeline('⏹️', 'Session stopped');
+  });
+  es.addEventListener('deleted', (e) => {
+    const { deviceId } = JSON.parse(e.data);
+    delete devicesState[deviceId];
+    if (markers[deviceId]) { map.removeLayer(markers[deviceId]); delete markers[deviceId]; }
+    if (trails[deviceId]) { map.removeLayer(trails[deviceId]); delete trails[deviceId]; }
+    renderDevices();
+  });
+  es.onerror = () => {
+    $('conn').textContent = 'reconnecting…';
+    $('conn').classList.remove('ok');
+    $('statusDot').classList.remove('live');
+  };
+}
+connect();
+
+// Fetch server health periodically for uptime display
+setInterval(async () => {
+  try {
+    const r = await fetch('/api/v1/health');
+    const h = await r.json();
+    if (h.ok) {
+      $('uptime').style.display = '';
+      const hrs = Math.floor(h.uptimeSec / 3600);
+      const mins = Math.floor((h.uptimeSec % 3600) / 60);
+      $('uptime').textContent = `uptime ${hrs}h ${mins}m · ${h.devices} dev`;
+    }
+  } catch (_) {}
+}, 30000);
+</script>
+</body>
+</html>
