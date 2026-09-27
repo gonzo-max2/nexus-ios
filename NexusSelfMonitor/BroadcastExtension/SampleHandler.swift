@@ -25,6 +25,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
     private var lastFrameTime: TimeInterval = 0
     private var task: URLSessionTask?
     private var consentTimer: DispatchSourceTimer?
+    private var broadcastID = UUID()
 
     override func broadcastStarted(withSetupInfo setupInfo: [String: NSObject]?) {
         worker.async { [weak self] in self?.startBroadcast() }
@@ -33,11 +34,14 @@ final class SampleHandler: RPBroadcastSampleHandler {
     private func startBroadcast() {
         guard let config = BroadcastConfiguration.load(), config.enabled,
               !config.ingestToken.isEmpty,
-              let url = URL(string: config.serverURL), ["http", "https"].contains(url.scheme ?? "") else {
+              let url = URL(string: config.serverURL), let host = url.host, !host.isEmpty,
+              ["http", "https"].contains(url.scheme ?? "") else {
             fail("Open Self-Monitor and enable screen sharing with a server URL and access token first.")
             return
         }
         configuration = config
+        broadcastID = UUID()
+        let id = broadcastID
         active = true
         paused = false
         sequence = 0
@@ -53,7 +57,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
         task = network.dataTask(with: request) { [weak self] data, response, error in
             guard let self else { return }
             self.worker.async {
-                guard self.active else { return }
+                guard self.active, self.broadcastID == id else { return }
                 guard error == nil, (response as? HTTPURLResponse)?.statusCode == 200,
                       let data, let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let sid = object["sessionId"] as? String, !sid.isEmpty else {
@@ -103,6 +107,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
                                                             options: [quality: 0.55]),
                       jpeg.count <= 1024 * 1024 else { return }
                 var request = makeRequest(path: "api/v1/screen", config: config)
+                let id = broadcastID
                 request.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
                 request.setValue(config.deviceId, forHTTPHeaderField: "X-Device-Id")
                 request.setValue(sid, forHTTPHeaderField: "X-Session-Id")
@@ -112,6 +117,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
                 task = network.uploadTask(with: request, from: jpeg) { [weak self] _, response, _ in
                     guard let self else { return }
                     self.worker.async {
+                        guard self.broadcastID == id else { return }
                         self.uploading = false
                         self.task = nil
                         guard self.active else { return }

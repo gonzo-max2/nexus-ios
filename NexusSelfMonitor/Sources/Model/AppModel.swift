@@ -198,6 +198,7 @@ final class AppModel: ObservableObject {
             if startAttempt == attempt {
                 startAttempt = nil
                 isStarting = false
+                if !isMonitoring { status = "Idle" }
             }
         }
         lastErrorText = nil

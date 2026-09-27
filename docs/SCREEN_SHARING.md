@@ -59,6 +59,19 @@ Server integration tests use synthetic JPEG bytes; they are not evidence of a
 physical iPhone broadcast. Simulator tests validate lifecycle and upload logic;
 hardware capture, signing, and sustained XR performance require the device.
 
+The optional browser regression runs against a temporary local server with a
+clearly labeled synthetic frame. Install Playwright into a temporary directory,
+then from the repository root run:
+
+```bash
+npm install --prefix /tmp/nexus-ios-ui-qa playwright --no-audit --no-fund
+NODE_PATH=/tmp/nexus-ios-ui-qa/node_modules node server/test/screen-ui.test.cjs
+```
+
+It uses `/usr/bin/google-chrome` by default (override `CHROME_PATH`), verifies
+authorization, desktop/mobile rendering, expiry/reconnection/stop, token cleanup,
+and page errors, and writes screenshots to ignored `build-output/ui-qa/`.
+
 References: [Apple ReplayKit security](https://support.apple.com/en-gb/guide/security/seca5fc039dd/web),
 [ReplayKit](https://developer.apple.com/documentation/replaykit),
 [sample handler](https://developer.apple.com/documentation/replaykit/rpbroadcastsamplehandler).
