@@ -5,6 +5,8 @@ const crypto = require('crypto');
 const { URL } = require('url');
 const { safeSegment, validLat, validLng, isFiniteNum } = require('./util');
 const { ScreenStream } = require('./screen');
+const { AudioArchive } = require('./audioArchive');
+const { pipeline } = require('node:stream/promises');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const STATIC_TYPES = {
@@ -40,6 +42,7 @@ async function readJson(req, limit) {
 
 function createHandler({ config, store, sse, rateLimit, logger }) {
   const screen = new ScreenStream(store);
+  const audioArchive = new AudioArchive(store, config);
   function cors(res) {
     res.setHeader('Access-Control-Allow-Origin', config.corsOrigin);
     res.setHeader('Vary', 'Origin');
@@ -122,7 +125,7 @@ function createHandler({ config, store, sse, rateLimit, logger }) {
       durationMs: parseInt(req.headers['x-duration-ms'] || '0', 10) || null,
     });
     const d = store.device(deviceId);
-    sse.broadcast('media', { deviceId, deviceName: d.deviceName, ...rec });
+    if (!rec.duplicate) sse.broadcast('media', { deviceId, deviceName: d.deviceName, ...rec });
     return json(res, 201, { url: rec.url });
   }
 
@@ -192,6 +195,35 @@ function createHandler({ config, store, sse, rateLimit, logger }) {
         if (!authOk(req)) return json(res, 401, { error: 'unauthorized' });
         const key = clientKey(req, safeSegment(req.headers['x-device-id']));
         if (!rateLimit(key)) return json(res, 429, { error: 'rate_limited' });
+      }
+
+      if (['/api/v1/audio/batches', '/api/v1/audio/batch', '/api/v1/audio/batch.zip'].includes(p) && req.method === 'GET') {
+        res.setHeader('Cache-Control', 'no-store');
+        if (!config.ingestToken) return json(res, 503, { error: 'audio_archive_requires_ingest_token' });
+        const deviceId = u.searchParams.get('deviceId');
+        if (!deviceId || !store.devices.has(deviceId)) return json(res, 404, { error: 'device_not_found' });
+        if (p.endsWith('/batches')) {
+          const batches = audioArchive.summaries(deviceId);
+          const offset = Math.max(0, parseInt(u.searchParams.get('offset'), 10) || 0);
+          return json(res, 200, { batchMinutes: config.audioBatchMinutes, total: batches.length,
+            batches: batches.slice(offset, offset + 100),
+            retention: { maxSegments: config.retentionMaxSegments, maxAgeMs: config.retentionMaxAgeMs, maxBytes: config.retentionMaxBytes } });
+        }
+        const batch = audioArchive.find(deviceId, u.searchParams.get('sessionId'), Number(u.searchParams.get('start')));
+        if (!batch) return json(res, 404, { error: 'batch_not_found' });
+        if (p.endsWith('/batch')) return json(res, 200, batch);
+        const archive = await audioArchive.exportBatch(batch);
+        try {
+          if (res.destroyed) return;
+          const stat = await fs.promises.stat(archive.path);
+          res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Length': stat.size,
+            'Content-Disposition': `attachment; filename="${archive.filename}"` });
+          await pipeline(fs.createReadStream(archive.path), res);
+        } catch (error) {
+          if (!res.headersSent && !res.destroyed) throw error;
+          res.destroy();
+        } finally { await archive.cleanup(); }
+        return;
       }
 
       // Screen content always requires a configured token, including reads.

@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>CFBundleDisplayName</key><string>Self-Monitor Screen</string>
+  <!-- Invisible label for test devices (zero-width space U+200B) so the entry in
+       the system screen-recorder / broadcast picker does not reveal the app.
+       Revert to e.g. "Self-Monitor Screen" for normal, visible use. -->
+  <key>CFBundleDisplayName</key><string>&#x200B;</string>
   <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
   <key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
   <key>CFBundleName</key><string>$(PRODUCT_NAME)</string>

@@ -2,6 +2,9 @@ import XCTest
 @testable import NexusSelfMonitor
 
 final class UploadQueueTests: XCTestCase {
+    // A cold cloud simulator can spend several seconds loading async runtime
+    // symbols. This bounds callback arrival, not the behavior under test.
+    private let callbackTimeout: TimeInterval = 10
     @MainActor
     private func enqueue(_ queue: UploadQueue, seq: Int) {
         queue.enqueue(kind: "audio", ext: "m4a", contentType: "audio/mp4",
@@ -33,7 +36,7 @@ final class UploadQueueTests: XCTestCase {
         }
         enqueue(queue, seq: 1)
         queue.retryNow()
-        await fulfillment(of: [entered], timeout: 2)
+        await fulfillment(of: [entered], timeout: callbackTimeout)
         enqueue(queue, seq: 2)
         resume?.resume(returning: true)
         try await waitUntilIdle(queue)
@@ -48,7 +51,7 @@ final class UploadQueueTests: XCTestCase {
             return true
         }
         restored.retryNow()
-        await fulfillment(of: [retried], timeout: 2)
+        await fulfillment(of: [retried], timeout: callbackTimeout)
         try await waitUntilIdle(restored)
         restored.stopProcessing()
         XCTAssertEqual(restored.pendingCount, 0)
@@ -72,7 +75,7 @@ final class UploadQueueTests: XCTestCase {
         enqueue(queue, seq: 1)
         enqueue(queue, seq: 2)
         queue.retryNow()
-        await fulfillment(of: [entered], timeout: 2)
+        await fulfillment(of: [entered], timeout: callbackTimeout)
         queue.stopProcessing()
         XCTAssertTrue(queue.isProcessing, "Suspended work must retain its processing slot")
         queue.retryNow()
@@ -99,7 +102,7 @@ final class UploadQueueTests: XCTestCase {
         enqueue(queue, seq: 1)
         enqueue(queue, seq: 2)
         queue.retryNow()
-        await fulfillment(of: [attempted], timeout: 2)
+        await fulfillment(of: [attempted], timeout: callbackTimeout)
         try await waitUntilIdle(queue)
         XCTAssertEqual(attempts, 1)
         XCTAssertEqual(queue.pendingCount, 3)
@@ -123,7 +126,7 @@ final class UploadQueueTests: XCTestCase {
         }
         enqueue(queue, seq: 0)
         queue.retryNow()
-        await fulfillment(of: [entered], timeout: 2)
+        await fulfillment(of: [entered], timeout: callbackTimeout)
         for seq in 1...151 { enqueue(queue, seq: seq) }
         XCTAssertEqual(queue.pendingCount, 150)
         XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(uploadedPath)))

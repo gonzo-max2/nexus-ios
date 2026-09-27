@@ -115,11 +115,19 @@ class Store {
     const dir = path.join(this.cfg.dataDir, id, sid);
     fs.mkdirSync(dir, { recursive: true });
     const filename = `${kind}_${safeSegment(seq)}.${ext}`;
-    fs.writeFileSync(path.join(dir, filename), bytes);
     const d = this.device(id);
+    const url = `/media/${id}/${sid}/${filename}`;
+    const existing = d.segments.find((segment) => segment.url === url);
+    if (existing) {
+      if (fs.readFileSync(path.join(dir, filename)).equals(bytes)) return { ...existing, duplicate: true };
+      throw Object.assign(new Error('media_sequence_conflict'), { statusCode: 409 });
+    }
+    const filePath = path.join(dir, filename);
+    fs.writeFileSync(filePath + '.tmp', bytes);
+    fs.renameSync(filePath + '.tmp', filePath);
     const rec = {
       kind, seq: safeSegment(seq), sessionId: sid,
-      url: `/media/${id}/${sid}/${filename}`,
+      url,
       contentType: meta.contentType || 'application/octet-stream',
       bytes: bytes.length,
       startedAt: meta.startedAt || null,
@@ -143,6 +151,10 @@ class Store {
       if (tooOld) drop.push(s); else keep.push(s);
     }
     while (keep.length > maxN) drop.push(keep.shift());
+    let bytes = keep.reduce((sum, segment) => sum + (segment.bytes || 0), 0);
+    while (this.cfg.retentionMaxBytes > 0 && bytes > this.cfg.retentionMaxBytes && keep.length) {
+      const segment = keep.shift(); bytes -= segment.bytes || 0; drop.push(segment);
+    }
     for (const s of drop) {
       try { fs.rmSync(path.join(this.cfg.dataDir, s.url.replace('/media/', '')), { force: true }); }
       catch (_) { /* best effort */ }

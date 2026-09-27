@@ -2,10 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Nexus Self-Monitor — Live Dashboard</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📱</text></svg>" />
 <link rel="stylesheet" href="/screen.css" />
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="/vendor/leaflet/leaflet.css" />
 <style>
   :root { color-scheme: dark; --bg:#0a0c10; --panel:#12151c; --card:#171b25;
           --line:#1e2330; --text:#e2e6ee; --muted:#7c8598; --accent:#ff5a3c;
@@ -197,14 +197,14 @@
   <img id="lightboxImg" src="" />
 </div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/vendor/leaflet/leaflet.js"></script>
 <script src="/screen.js"></script>
 <script>
 'use strict';
 const map = typeof L === 'undefined' ? null : L.map('map', { zoomControl: true }).setView([42.6977, 23.3219], 12);
-if (map) L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+if (map) L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19,
-  attribution: '© OpenStreetMap © CARTO'
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
 }).addTo(map);
 
 const markers = {};

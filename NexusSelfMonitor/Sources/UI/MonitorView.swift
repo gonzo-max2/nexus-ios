@@ -1,8 +1,7 @@
 import SwiftUI
 
-/// Main screen. Deliberately loud about recording state — the banner and meter
-/// make it impossible to forget the mic is live.
-/// Hardened with in-app diagnostics integration and live subsystem health warnings.
+/// Main screen. Understated, minimalist monitor interface.
+/// Provides clear session state and diagnostics while minimizing visual noise.
 struct MonitorView: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject var audio: AudioRecorderService
@@ -14,68 +13,43 @@ struct MonitorView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 16) {
-                    serverStatusBar
-                    recordingBanner
-                    levelMeter
-                    elapsedTimerView
+                VStack(spacing: 12) {
+                    statusHeaderCard
                     diagnosticsBanner
-                    statsPanel
-                    sensorPanel
-                    cameraPanel
-                    ScreenBroadcastView()
+                    queuedUploadsView
 
                     if let err = model.lastErrorText {
                         Text(err)
-                            .font(.footnote)
+                            .font(.caption)
                             .foregroundColor(.red)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal)
                     }
 
-                    if model.uploadQueue.pendingCount > 0 {
-                        Button {
-                            model.uploadQueue.retryNow()
-                        } label: {
-                            HStack {
-                                Image(systemName: "arrow.triangle.2.circlepath")
-                                    .foregroundColor(.orange)
-                                Text("\(model.uploadQueue.pendingCount) queued (\(model.uploadQueue.totalDiskBytes / 1024) KB) · Tap to retry")
-                                    .font(.footnote.weight(.semibold))
-                                    .foregroundColor(.orange)
-                            }
-                            .padding(8)
-                            .frame(maxWidth: .infinity)
-                            .background(Color.orange.opacity(0.12))
-                            .cornerRadius(8)
-                        }
-                    }
-
-                    Button(action: { model.toggleMonitoring() }) {
-                        Text(model.isStarting ? "Cancel start" : (model.isMonitoring ? "Stop" : "Start recording"))
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(model.isMonitoring ? Color.red : Color.accentColor)
-                            .foregroundColor(.white)
-                            .cornerRadius(14)
-                    }
+                    controlButton
+                    statsPanel
+                    sensorPanel
+                    cameraPanel
+                    ScreenBroadcastView()
 
                     Button {
                         showDiagnostics = true
                     } label: {
-                        HStack {
-                            Image(systemName: "stethoscope")
-                            Text("Open Live Diagnostics & Traces")
+                        HStack(spacing: 4) {
+                            Image(systemName: "waveform.path.ecg")
+                            Text("Diagnostics & Logs")
                         }
-                        .font(.footnote)
+                        .font(.caption)
                         .foregroundColor(.secondary)
                     }
                     .padding(.top, 4)
                 }
-                .padding()
+                .padding(.horizontal)
+                .padding(.top, 8)
             }
+            .background(Color(UIColor.systemGroupedBackground).ignoresSafeArea())
             .navigationTitle("Self-Monitor")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button {
@@ -84,21 +58,149 @@ struct MonitorView: View {
                         HStack(spacing: 3) {
                             Image(systemName: "waveform.path.ecg")
                             if logger.errorCount > 0 {
-                                Circle().fill(Color.red).frame(width: 6, height: 6)
+                                Circle().fill(Color.orange).frame(width: 6, height: 6)
                             }
                         }
+                        .foregroundColor(.secondary)
                     }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button { showSettings = true } label: { Image(systemName: "gearshape") }
+                    Button { showSettings = true } label: {
+                        Image(systemName: "gearshape")
+                            .foregroundColor(.secondary)
+                    }
                 }
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
             .sheet(isPresented: $showDiagnostics) { DiagnosticsView() }
+            .onAppear {
+                if !model.isMonitoring && !model.isStarting && model.hasConsented && model.settings.autoStartEnabled && model.isConfiguredForStreaming {
+                    Task { @MainActor in
+                        await model.start()
+                    }
+                }
+            }
         }
     }
 
-    // MARK: - Diagnostics Banner
+    // MARK: - Consolidated Status Card
+
+    private var statusHeaderCard: some View {
+        VStack(spacing: 10) {
+            HStack(alignment: .center) {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(model.isMonitoring ? Color.green : Color.secondary.opacity(0.4))
+                        .frame(width: 8, height: 8)
+                    Text(audio.isRecording ? "Active" : (model.isMonitoring ? "Paused" : "Idle"))
+                        .font(.subheadline.weight(.medium))
+                        .foregroundColor(.primary)
+                }
+
+                Spacer()
+
+                if model.isMonitoring {
+                    HStack(spacing: 4) {
+                        Image(systemName: "clock")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Text(formatElapsed(model.elapsedSeconds))
+                            .font(.system(.caption, design: .monospaced).weight(.medium))
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color(UIColor.tertiarySystemFill))
+                    .clipShape(Capsule())
+                }
+
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(model.serverOnline ? Color.green : Color.secondary.opacity(0.5))
+                        .frame(width: 6, height: 6)
+                    Text(model.serverOnline ? "Online" : "Offline")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            if model.isMonitoring {
+                levelMeter
+            }
+        }
+        .padding(12)
+        .background(Color(UIColor.secondarySystemGroupedBackground))
+        .cornerRadius(12)
+    }
+
+    // MARK: - Minimalist Level Gauge
+
+    private var levelMeter: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color(UIColor.tertiarySystemFill))
+                Capsule()
+                    .fill(Color.accentColor.opacity(0.8))
+                    .frame(width: max(0, min(geo.size.width, geo.size.width * CGFloat(audio.level))))
+                    .animation(.linear(duration: 0.08), value: audio.level)
+            }
+        }
+        .frame(height: 3)
+    }
+
+    // MARK: - Subdued Action Controls
+
+    private var controlButton: some View {
+        Button(action: { model.toggleMonitoring() }) {
+            HStack(spacing: 6) {
+                Image(systemName: model.isMonitoring ? "stop.fill" : "play.fill")
+                    .font(.caption2.weight(.bold))
+                Text(model.isStarting ? "Starting..." : (model.isMonitoring ? "End Session" : "Start Session"))
+                    .font(.subheadline.weight(.medium))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 11)
+            .background(
+                model.isMonitoring
+                    ? Color.red.opacity(0.08)
+                    : Color.accentColor.opacity(0.1)
+            )
+            .foregroundColor(model.isMonitoring ? .red : .accentColor)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(model.isMonitoring ? Color.red.opacity(0.2) : Color.accentColor.opacity(0.2), lineWidth: 1)
+            )
+            .cornerRadius(10)
+        }
+    }
+
+    // MARK: - Queued Uploads Accessory
+
+    @ViewBuilder
+    private var queuedUploadsView: some View {
+        if model.uploadQueue.pendingCount > 0 {
+            Button {
+                model.uploadQueue.retryNow()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.caption2)
+                    Text("\(model.uploadQueue.pendingCount) queued (\(model.uploadQueue.totalDiskBytes / 1024) KB)")
+                        .font(.caption2.weight(.medium))
+                    Spacer()
+                    Text("Retry")
+                        .font(.caption2.weight(.semibold))
+                }
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color(UIColor.tertiarySystemFill))
+                .cornerRadius(8)
+            }
+        }
+    }
+
+    // MARK: - Diagnostics Accessory
 
     @ViewBuilder
     private var diagnosticsBanner: some View {
@@ -106,95 +208,22 @@ struct MonitorView: View {
             Button {
                 showDiagnostics = true
             } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: logger.errorCount > 0 ? "exclamationmark.triangle.fill" : "info.circle.fill")
-                        .foregroundColor(logger.errorCount > 0 ? .red : .orange)
-                    Text("\(logger.errorCount) errors, \(logger.warningCount) warnings in system log")
-                        .font(.caption.weight(.medium))
-                        .foregroundColor(.primary)
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Text("\(logger.errorCount) warnings / issues recorded")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
                     Spacer()
                     Image(systemName: "chevron.right")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
-                .padding(10)
-                .background(Color(logger.errorCount > 0 ? UIColor.systemRed : UIColor.systemOrange).opacity(0.12))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color(UIColor.tertiarySystemFill))
                 .cornerRadius(8)
-            }
-        }
-    }
-
-    // MARK: - Server Status
-
-    private var serverStatusBar: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(model.serverOnline ? Color.green : Color.red)
-                .frame(width: 8, height: 8)
-            Text(model.serverOnline ? "Server online" : "Server offline")
-                .font(.caption)
-                .foregroundColor(model.serverOnline ? .green : .red)
-            Spacer()
-            Text(model.settings.serverURL)
-                .font(.caption2)
-                .foregroundColor(.secondary)
-                .lineLimit(1)
-        }
-        .padding(.horizontal, 12).padding(.vertical, 6)
-        .background(Color.gray.opacity(0.08))
-        .cornerRadius(8)
-    }
-
-    // MARK: - Recording Banner
-
-    private var recordingBanner: some View {
-        HStack(spacing: 12) {
-            Circle()
-                .fill(model.isMonitoring ? Color.red : Color.gray)
-                .frame(width: 14, height: 14)
-                .opacity(model.isMonitoring ? 1 : 0.5)
-            Text(audio.isRecording ? "● RECORDING & STREAMING" : (model.isMonitoring ? "Microphone paused" : "Not recording"))
-                .font(.subheadline.weight(.semibold))
-            Spacer()
-        }
-        .padding()
-        .background(model.isMonitoring ? Color.red.opacity(0.12) : Color.gray.opacity(0.1))
-        .cornerRadius(12)
-    }
-
-    // MARK: - Level Meter
-
-    private var levelMeter: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.15))
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(LinearGradient(colors: [.green, .yellow, .red],
-                                         startPoint: .leading, endPoint: .trailing))
-                    .frame(width: geo.size.width * CGFloat(audio.level))
-                    .animation(.linear(duration: 0.1), value: audio.level)
-            }
-        }
-        .frame(height: 12)
-        .opacity(model.isMonitoring ? 1 : 0.4)
-    }
-
-    // MARK: - Elapsed Timer
-
-    private var elapsedTimerView: some View {
-        Group {
-            if model.isMonitoring {
-                HStack {
-                    Image(systemName: "timer")
-                        .foregroundColor(.orange)
-                    Text(formatElapsed(model.elapsedSeconds))
-                        .font(.system(.title2, design: .monospaced).weight(.medium))
-                        .foregroundColor(.primary)
-                    Spacer()
-                }
-                .padding(10)
-                .background(Color.orange.opacity(0.08))
-                .cornerRadius(10)
             }
         }
     }
@@ -211,8 +240,8 @@ struct MonitorView: View {
             }
             row("Telemetry pushes", "\(model.telemetrySent)")
         }
-        .padding()
-        .background(Color.gray.opacity(0.08))
+        .padding(12)
+        .background(Color(UIColor.secondarySystemGroupedBackground))
         .cornerRadius(12)
     }
 
@@ -222,7 +251,8 @@ struct MonitorView: View {
         VStack(spacing: 6) {
             HStack {
                 Image(systemName: "sensor.tag.radiowaves.forward")
-                Text("Device Sensors").font(.subheadline.weight(.semibold))
+                    .foregroundColor(.secondary)
+                Text("Device Sensors").font(.subheadline.weight(.medium))
                 Spacer()
             }
             row("Battery", model.telemetry.batteryLevel >= 0
@@ -231,8 +261,8 @@ struct MonitorView: View {
             row("Steps", "\(model.telemetry.steps)")
             row("Sensors active", model.telemetry.isActive ? "Yes" : "No")
         }
-        .padding()
-        .background(Color.gray.opacity(0.08))
+        .padding(12)
+        .background(Color(UIColor.secondarySystemGroupedBackground))
         .cornerRadius(12)
     }
 
@@ -244,7 +274,8 @@ struct MonitorView: View {
                 VStack(spacing: 6) {
                     HStack {
                         Image(systemName: "camera")
-                        Text("Camera Capture").font(.subheadline.weight(.semibold))
+                            .foregroundColor(.secondary)
+                        Text("Camera Capture").font(.subheadline.weight(.medium))
                         Spacer()
                         if model.isMonitoring {
                             Button {
@@ -252,6 +283,7 @@ struct MonitorView: View {
                             } label: {
                                 Image(systemName: "arrow.triangle.2.circlepath.camera")
                                     .font(.caption)
+                                    .foregroundColor(.secondary)
                             }
                         }
                     }
@@ -259,8 +291,8 @@ struct MonitorView: View {
                     row("Interval", "\(model.settings.cameraIntervalSeconds)s")
                     row("Capturing", model.camera.isCapturing ? "Active" : "Idle")
                 }
-                .padding()
-                .background(Color.gray.opacity(0.08))
+                .padding(12)
+                .background(Color(UIColor.secondarySystemGroupedBackground))
                 .cornerRadius(12)
             }
         }
@@ -269,7 +301,7 @@ struct MonitorView: View {
     // MARK: - Helpers
 
     private func row(_ k: String, _ v: String) -> some View {
-        HStack { Text(k).foregroundColor(.secondary); Spacer(); Text(v).multilineTextAlignment(.trailing) }
+        HStack { Text(k).foregroundColor(.secondary); Spacer(); Text(v).foregroundColor(.primary).multilineTextAlignment(.trailing) }
             .font(.subheadline)
     }
 

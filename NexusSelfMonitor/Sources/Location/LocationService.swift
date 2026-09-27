@@ -100,10 +100,16 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
         if hasLocationBgMode && manager.authorizationStatus == .authorizedAlways {
             manager.allowsBackgroundLocationUpdates = true
             manager.showsBackgroundLocationIndicator = true
-            DiagnosticsLogger.shared.log("Enabled background location updates with OS indicator.",
+            if CLLocationManager.significantLocationChangeMonitoringAvailable() {
+                manager.startMonitoringSignificantLocationChanges()
+            }
+            DiagnosticsLogger.shared.log("Enabled background location updates with OS indicator and significant changes.",
                                          subsystem: .location, level: .info)
         } else {
             manager.allowsBackgroundLocationUpdates = false
+            if CLLocationManager.significantLocationChangeMonitoringAvailable() {
+                manager.stopMonitoringSignificantLocationChanges()
+            }
             if enabled {
                 DiagnosticsLogger.shared.log("Background location updates unavailable (Requires 'Always' authorization).",
                                              subsystem: .location, level: .warn)

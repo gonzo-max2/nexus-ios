@@ -90,10 +90,17 @@ final class AppModel: ObservableObject {
                 Task { @MainActor in self?.handlePowerStateChange() }
             })
 
-        // Start health check polling.
+        // Start health check polling and auto-start if enabled.
         if automaticStartup {
             startHealthPolling()
             attemptCrashRecovery()
+            if hasConsented && settings.autoStartEnabled && isConfiguredForStreaming && !isMonitoring && !isStarting {
+                Task { @MainActor [weak self] in
+                    DiagnosticsLogger.shared.log("Auto-start enabled: starting monitoring session automatically.",
+                                                 subsystem: .app, level: .info)
+                    await self?.start()
+                }
+            }
         }
     }
 
@@ -120,6 +127,9 @@ final class AppModel: ObservableObject {
         hasConsented = true
         UserDefaults.standard.set(true, forKey: Self.consentKey)
         DiagnosticsLogger.shared.log("User consent granted.", subsystem: .app, level: .info)
+        if settings.autoStartEnabled && isConfiguredForStreaming && !isMonitoring && !isStarting {
+            Task { await start() }
+        }
     }
 
     func revokeConsent() {
@@ -167,6 +177,11 @@ final class AppModel: ObservableObject {
             if isMonitoring && !audio.isRecording && sessionId != nil {
                 DiagnosticsLogger.shared.log("Reclaiming audio session on foreground return", subsystem: .audio, level: .info)
                 audio.reclaimSession(segmentSeconds: settings.segmentSeconds)
+            } else if !isMonitoring && !isStarting && hasConsented && settings.autoStartEnabled && isConfiguredForStreaming {
+                DiagnosticsLogger.shared.log("Auto-start engaged on scene active", subsystem: .app, level: .info)
+                Task { @MainActor [weak self] in
+                    await self?.start()
+                }
             }
             startHealthPolling()
 
@@ -187,8 +202,22 @@ final class AppModel: ObservableObject {
 
     // MARK: - Start Session
 
+    /// True when the app has everything it needs to open a session: a parseable
+    /// server URL and a non-empty token. Auto-start is gated on this so a build
+    /// or an install without credentials reports a clear status instead of
+    /// failing deep inside the first upload.
+    var isConfiguredForStreaming: Bool {
+        settings.baseURL != nil && !settings.ingestToken.isEmpty
+    }
+
     func start() async {
         guard hasConsented, !isMonitoring, !isStarting else { return }
+        guard isConfiguredForStreaming else {
+            status = "Set the server URL and ingest token in Settings first."
+            DiagnosticsLogger.shared.log("Start refused: server URL or ingest token missing.",
+                                         subsystem: .app, level: .warn)
+            return
+        }
         let attempt = UUID()
         startAttempt = attempt
         isStarting = true
@@ -608,11 +637,17 @@ final class AppModel: ObservableObject {
             return
         }
 
-        DiagnosticsLogger.shared.log("Detected interrupted session from previous run (age: \(Int(age))s). Waiting for user to restart.",
+        DiagnosticsLogger.shared.log("Detected interrupted session from previous run (age: \(Int(age))s). Cleaning up previous session.",
                                      subsystem: .app, level: .warn)
         clearSessionState()
-        status = "Previous session interrupted. Tap Start recording to resume."
         let previousClient = client
         Task { await previousClient.stopSession(sessionId: savedSid) }
+        if settings.autoStartEnabled && isConfiguredForStreaming {
+            DiagnosticsLogger.shared.log("Interrupted session cleaned up; automatically starting fresh session.",
+                                         subsystem: .app, level: .info)
+            Task { @MainActor [weak self] in
+                await self?.start()
+            }
+        }
     }
 }

@@ -17,7 +17,13 @@ struct SettingsView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
-                    SecureField("Ingest token (optional)", text: $draft.ingestToken)
+                    SecureField("Ingest token", text: $draft.ingestToken)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                } footer: {
+                    Text(draft.ingestToken.isEmpty
+                         ? "Required. Ask the operator running the dashboard for this device's token."
+                         : "Pre-filled by this build. Change it only if the token was rotated.")
                 }
                 Section("This device") {
                     TextField("Device name", text: $draft.deviceName)
@@ -39,6 +45,7 @@ struct SettingsView: View {
                     Toggle("Include my location", isOn: $draft.locationEnabled)
                     Toggle("Keep logging in background (worn use)", isOn: $draft.backgroundEnabled)
                         .disabled(!draft.locationEnabled)
+                    Toggle("Auto-start monitoring on launch", isOn: $draft.autoStartEnabled)
                 }
                 Section("Diagnostics & Storage") {
                     LabeledContent("Queued Uploads", value: "\(model.uploadQueue.pendingCount) items (\(model.uploadQueue.totalDiskBytes / 1024) KB)")

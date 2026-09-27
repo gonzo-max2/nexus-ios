@@ -115,3 +115,64 @@ You can sign and install the resulting `.ipa` directly to your iPhone using any 
 - **AltStore / AltServer** (Mac & Windows): Free sideloading via personal Apple ID.
 - **Sideloadly** (Mac & Windows): Simple drag-and-drop IPA installer.
 - **TrollStore** (if on supported iOS version): Direct on-device installation.
+- **iLoader** (on-device IPA installer): sign & install the unsigned IPA with your own certificate.
+
+---
+
+## Hiding the app on a test device
+
+Test-device builds ship an **invisible Home Screen presence** so the app does not
+advertise itself during training runs:
+
+- `Resources/Assets.xcassets/AppIcon.appiconset/AppIcon1024.png` is a fully
+  transparent 1024×1024 icon (selected via `ASSETCATALOG_COMPILER_APPICON_NAME`
+  in `project.yml`), so the wallpaper shows through the icon slot.
+- `CFBundleDisplayName` in `Resources/Info.plist` is a single zero-width space
+  (`U+200B`), so no name renders under the icon (or in Settings / app switcher).
+- The `ScreenBroadcast` extension display name in
+  `BroadcastExtension/Info.plist` is blanked the same way, so the app does not
+  appear by name in the system screen-recorder/broadcast picker.
+
+The app remains reachable via Spotlight search (type nothing — swipe down on the
+Home Screen and pick it from suggestions) or App Library, and iOS may still show
+it in Settings → General → iPhone Storage.
+
+To make it visible again, revert `CFBundleDisplayName` to a real name (e.g.
+`Self-Monitor`) and either delete the asset catalog setting
+(`ASSETCATALOG_COMPILER_APPICON_NAME`) or replace `AppIcon1024.png` with a real
+icon, then rebuild and reinstall.
+
+Device-side alternative (iOS 18+, no rebuild): touch and hold the app icon →
+**Remove App** → **Hide App**; the app moves to the Hidden folder in App Library
+behind Face ID/passcode.
+
+Notes:
+
+- A transparent icon is fine for sideloaded IPAs; App Store validation would
+  reject it (missing required icon artwork / alpha channel), which is out of
+  scope for test builds.
+- With Home Screen icon tinting/dark mode enabled (iOS 18+), a tile may still be
+  faintly visible; use the default icon appearance for best invisibility.
+
+### Verifying the invisible build
+
+`scripts/verify_hidden_app.py` (stdlib-only Python 3, so it runs on the Linux dev
+box and on the CI runners alike) enforces the contract above and exits non-zero on
+any regression:
+
+```bash
+python3 scripts/verify_hidden_app.py                                            # repository sources
+python3 scripts/verify_hidden_app.py --app build/Release-iphoneos/NexusSelfMonitor.app
+python3 scripts/verify_hidden_app.py --app build/NexusSelfMonitor-unsigned.ipa
+```
+
+It asserts that both display names contain no visible glyph, that the `AppIcon`
+catalog entry is a fully transparent 8-bit RGBA PNG, that `project.yml` wires that
+catalog into the app target, and - for a built artifact - that the compiled icon
+artwork and the screen-broadcast extension are actually inside the bundle.
+
+`Tests/InvisibleAppTests.swift` asserts the display-name and icon-artwork
+properties at runtime from inside the built bundle. Both the script and the native
+tests run in the `Build iOS App` workflow; add the script to any local pre-push
+hook to catch a reverted display name before it reaches the device.
+

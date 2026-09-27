@@ -1,7 +1,8 @@
 'use strict';
 /** Shared validation helpers. */
 function safeSegment(s) {
-  return String(s == null ? '' : s).replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 128);
+  const value = String(s == null ? '' : s).replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 128);
+  return value === '.' || value === '..' ? '_' : value;
 }
 function isFiniteNum(n) { return typeof n === 'number' && Number.isFinite(n); }
 function validLat(n) { return isFiniteNum(n) && n >= -90 && n <= 90; }

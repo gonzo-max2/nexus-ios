@@ -19,6 +19,9 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Verify hidden-app configuration (repository sources)
+        run: python3 scripts/verify_hidden_app.py
+
       - name: Select Xcode Version
         run: |
           if [ -d "/Applications/Xcode_16.2.app" ]; then
@@ -64,6 +67,10 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             SYMROOT=build
 
+      - name: Verify hidden-app configuration (built .app bundle)
+        working-directory: NexusSelfMonitor
+        run: python3 ../scripts/verify_hidden_app.py --app build/Release-iphoneos/NexusSelfMonitor.app
+
       - name: Run native regression tests
         working-directory: NexusSelfMonitor
         run: |
@@ -91,6 +98,10 @@ jobs:
           cd build && zip -r NexusSelfMonitor-unsigned.ipa Payload
           cd ..
 
+      - name: Verify hidden-app configuration (packaged IPA)
+        working-directory: NexusSelfMonitor
+        run: python3 ../scripts/verify_hidden_app.py --app build/NexusSelfMonitor-unsigned.ipa
+
       - name: Upload IPA Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -107,5 +118,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Verify hidden-app configuration (repository sources)
+        run: python3 scripts/verify_hidden_app.py
       - run: npm test
         working-directory: server

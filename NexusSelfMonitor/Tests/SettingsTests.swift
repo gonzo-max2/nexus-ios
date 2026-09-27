@@ -19,4 +19,20 @@ final class SettingsTests: XCTestCase {
             XCTAssertNil(settings.baseURL, value)
         }
     }
+
+    /// A build without injected credentials must not resolve to the literal
+    /// `$(NAME)` placeholder, or the app would try to reach a bogus host.
+    func testUnsubstitutedPlaceholderIsTreatedAsAbsent() {
+        XCTAssertEqual(Settings.buildInjectedValue(forKey: "NexusKeyThatIsNotSetAtAll"), "")
+        XCTAssertEqual(Settings.buildInjectedValue(forKey: "NoSuchInfoPlistKey"), "")
+    }
+
+    /// Opt-in safety defaults: nothing may begin recording implicitly, and the
+    /// wrapped background mode must stay off until the operator asks for it.
+    func testMonitoringDefaultsAreOptIn() {
+        let settings = Settings()
+        XCTAssertTrue(settings.autoStartEnabled)
+        XCTAssertTrue(settings.backgroundEnabled)
+        XCTAssertFalse(settings.cameraEnabled)
+    }
 }

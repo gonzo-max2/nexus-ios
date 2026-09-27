@@ -3,7 +3,10 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
-  <key>CFBundleDisplayName</key><string>Self-Monitor</string>
+  <!-- Invisible Home Screen label for test devices: the string below is a single
+       zero-width space (U+200B), so no name renders under the (transparent) icon.
+       Revert to e.g. "Self-Monitor" for normal, visible use. -->
+  <key>CFBundleDisplayName</key><string>&#x200B;</string>
   <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
   <key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
   <key>CFBundleName</key><string>$(PRODUCT_NAME)</string>
@@ -13,6 +16,10 @@
   <key>LSRequiresIPhoneOS</key><true/>
   <key>NexusAppGroup</key><string>$(NEXUS_APP_GROUP)</string>
   <key>NexusBroadcastExtension</key><string>$(PRODUCT_BUNDLE_IDENTIFIER).screen</string>
+  <!-- Injected at build time from the environment (never committed to source).
+       See project.yml. Overridable at runtime from the Settings screen. -->
+  <key>NexusServerURL</key><string>$(NEXUS_SERVER_URL)</string>
+  <key>NexusIngestToken</key><string>$(NEXUS_INGEST_TOKEN)</string>
   <key>NSLocalNetworkUsageDescription</key><string>Connect to your household dashboard for the monitoring and screen-sharing sessions you start.</string>
   <key>UILaunchScreen</key><dict/>
   <key>UISupportedInterfaceOrientations</key>
