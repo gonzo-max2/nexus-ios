@@ -28,6 +28,10 @@
     clearFrame(message);
     showStatus(message);
   }
+  image.addEventListener('error', () => {
+    clearFrame('The received screen frame could not be displayed. Waiting for a new frame.');
+    showStatus('Invalid screen frame');
+  });
   async function poll() {
     if (!connected || !token || !devices.value || document.hidden || busy) return;
     busy = true;

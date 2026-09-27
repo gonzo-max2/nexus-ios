@@ -92,7 +92,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
             guard now - lastFrameTime >= 0.5 else { return }
             lastFrameTime = now
             autoreleasepool {
-                let orientationValue = (CMGetAttachment(sampleBuffer, key: RPVideoSampleOrientationKey,
+                let orientationValue = (CMGetAttachment(sampleBuffer, key: RPVideoSampleOrientationKey as CFString,
                     attachmentModeOut: nil) as? NSNumber)?.uint32Value ?? 1
                 let orientation = CGImagePropertyOrientation(rawValue: orientationValue) ?? .up
                 let image = CIImage(cvPixelBuffer: pixels).oriented(orientation)
