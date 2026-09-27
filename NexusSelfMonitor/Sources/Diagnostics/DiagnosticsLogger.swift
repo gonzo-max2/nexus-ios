@@ -101,33 +101,39 @@ public final class DiagnosticsLogger: ObservableObject {
         log("Diagnostics subsystem initialized. Ready for telemetry and traces.", subsystem: .app, level: .info)
     }
 
-    /// Record a diagnostic event to both the in-memory ring buffer and Apple Unified Logging.
-    public func log(_ message: String, subsystem: Subsystem, level: Level = .info) {
+    /// Record a diagnostic event to both Apple Unified Logging and the in-memory ring buffer.
+    /// Thread-safe and nonisolated so any background actor can call it synchronously.
+    public nonisolated func log(_ message: String, subsystem: Subsystem, level: Level = .info) {
         let entry = LogEntry(subsystem: subsystem, level: level, message: message)
         
-        // Mirror to Unified Logging
-        if let osLogger = osLoggers[subsystem] {
-            switch level {
-            case .debug:
-                osLogger.debug("\(message, privacy: .public)")
-            case .info:
-                osLogger.info("\(message, privacy: .public)")
-            case .warn:
-                osLogger.warning("\(message, privacy: .public)")
-            case .error:
-                osLogger.error("\(message, privacy: .public)")
-            }
+        // Mirror immediately to Apple Unified Logging (thread-safe by Apple design)
+        let osLogger = Logger(subsystem: "com.nexus.selfmonitor", category: subsystem.osLogCategory)
+        switch level {
+        case .debug:
+            osLogger.debug("\(message, privacy: .public)")
+        case .info:
+            osLogger.info("\(message, privacy: .public)")
+        case .warn:
+            osLogger.warning("\(message, privacy: .public)")
+        case .error:
+            osLogger.error("\(message, privacy: .public)")
         }
 
-        // Manage circular ring buffer
+        // Dispatch to MainActor for SwiftUI state updates
+        Task { @MainActor in
+            self.appendEntry(entry)
+        }
+    }
+
+    private func appendEntry(_ entry: LogEntry) {
         if entries.count >= maxEntries {
             entries.removeFirst(entries.count - maxEntries + 1)
         }
         entries.append(entry)
 
-        if level == .warn {
+        if entry.level == .warn {
             warningCount += 1
-        } else if level == .error {
+        } else if entry.level == .error {
             errorCount += 1
         }
     }

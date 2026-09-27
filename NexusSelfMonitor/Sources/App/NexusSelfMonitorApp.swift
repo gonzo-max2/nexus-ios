@@ -10,7 +10,7 @@ struct NexusSelfMonitorApp: App {
         WindowGroup {
             RootView()
                 .environmentObject(model)
-                .onChange(of: scenePhase) { _, phase in
+                .onChange(of: scenePhase) { phase in
                     model.handleScenePhase(phase)
                 }
         }

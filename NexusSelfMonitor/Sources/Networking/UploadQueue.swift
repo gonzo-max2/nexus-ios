@@ -143,7 +143,7 @@ final class UploadQueue: ObservableObject {
     private func ensureRetryTimer() {
         guard retryTimer == nil, !items.isEmpty else { return }
         retryTimer = Timer.scheduledTimer(withTimeInterval: 6.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.processQueue() }
+            Task { @MainActor in await self?.processQueue() }
         }
     }
 
