@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import CoreLocation
 
 /// Wraps CLLocationManager for high-fidelity location telemetry.
@@ -20,6 +21,7 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
 
     private let manager = CLLocationManager()
     private var wantBackground: Bool = false
+    private var wantsUpdates = false
 
     override init() {
         super.init()
@@ -32,6 +34,7 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     func start(background: Bool) {
+        wantsUpdates = true
         wantBackground = background
         lastError = nil
 
@@ -66,6 +69,8 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     func stop() {
+        wantsUpdates = false
+        wantBackground = false
         manager.stopUpdatingLocation()
         safeSetBackgroundLocation(enabled: false)
         isUpdating = false
@@ -75,6 +80,7 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
     // MARK: - Private Helpers
 
     private func configureAndStart(enableBackground: Bool) {
+        guard wantsUpdates else { return }
         safeSetBackgroundLocation(enabled: enableBackground)
         manager.startUpdatingLocation()
         isUpdating = true
@@ -114,18 +120,15 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
             DiagnosticsLogger.shared.log("Location authorization status changed to: \(self.statusName(status))",
                                          subsystem: .location, level: .info)
 
+            guard self.wantsUpdates else { return }
             switch status {
             case .authorizedAlways:
-                if self.isUpdating || self.wantBackground {
-                    self.configureAndStart(enableBackground: self.wantBackground)
-                }
+                self.configureAndStart(enableBackground: self.wantBackground)
             case .authorizedWhenInUse:
                 if self.wantBackground {
                     manager.requestAlwaysAuthorization()
                 }
-                if self.isUpdating {
-                    self.configureAndStart(enableBackground: false)
-                }
+                self.configureAndStart(enableBackground: false)
             case .denied, .restricted:
                 self.lastError = "Location access denied."
                 self.stop()
@@ -141,6 +144,7 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
         guard let loc = locations.last else { return }
 
         Task { @MainActor in
+            guard self.wantsUpdates else { return }
             // Filter 1: Inaccurate fix (negative or > 100 meters)
             guard loc.horizontalAccuracy >= 0 && loc.horizontalAccuracy <= 100.0 else {
                 DiagnosticsLogger.shared.log("Filtered inaccurate GPS fix (accuracy: \(Int(loc.horizontalAccuracy))m)",

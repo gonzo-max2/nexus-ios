@@ -94,7 +94,7 @@ struct SettingsView: View {
                         model.settings = draft
                         model.persistSettings()
                         dismiss()
-                    }.disabled(model.isMonitoring)
+                    }.disabled(model.isMonitoring || model.isStarting || draft.baseURL == nil)
                 }
             }
             .sheet(isPresented: $showDiagnostics) {

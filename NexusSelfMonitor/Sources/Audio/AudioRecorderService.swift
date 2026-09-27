@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import AVFoundation
 
 /// Records the user's own microphone as a sequence of complete, self-contained
@@ -29,6 +30,7 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
     private var active = false
     private var interrupted = false
     private var startRetryCount = 0
+    private var retryTask: Task<Void, Never>?
     private let maxStartRetries = 3
 
     private let settingsFormat: [String: Any] = [
@@ -57,6 +59,7 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
         self.seq = 0
         self.interrupted = false
         self.startRetryCount = 0
+        lastError = nil
 
         cleanupOrphanSegments()
 
@@ -73,10 +76,11 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
 
     func stop() {
         active = false
+        retryTask?.cancel()
+        retryTask = nil
         interrupted = false
         meterTimer?.invalidate(); meterTimer = nil
-        recorder?.stop()
-        recorder = nil
+        discardCurrentSegment()
         isRecording = false
         level = 0
         unregisterNotifications()
@@ -122,13 +126,14 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
 
     private func startNextSegment() {
         guard active, !interrupted else { return }
+        retryTask?.cancel()
+        retryTask = nil
 
         // Defensive: stop any dangling recorder.
-        recorder?.stop()
-        recorder = nil
+        discardCurrentSegment()
 
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("seg_\(Date().epochMillis)_\(seq).m4a")
+            .appendingPathComponent("seg_\(UUID().uuidString)_\(seq).m4a")
 
         do {
             let r = try AVAudioRecorder(url: url, settings: settingsFormat)
@@ -144,6 +149,7 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
             }
             recorder = r
             isRecording = true
+            lastError = nil
             startRetryCount = 0  // Reset on success.
         } catch {
             lastError = "Recorder init: \(error.localizedDescription)"
@@ -161,9 +167,23 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
         }
         // Exponential backoff: 0.5s, 1s, 2s
         let delay = TimeInterval(0.5 * Double(1 << (startRetryCount - 1)))
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        retryTask?.cancel()
+        retryTask = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+            catch { return }
+            guard !Task.isCancelled else { return }
             self?.startNextSegment()
         }
+    }
+
+    private func discardCurrentSegment() {
+        guard let current = recorder else { return }
+        recorder = nil
+        current.delegate = nil
+        current.stop()
+        try? FileManager.default.removeItem(at: current.url)
+        isRecording = false
+        level = 0
     }
 
     // MARK: - Level Meter
@@ -190,6 +210,10 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
             at: tmpDir, includingPropertiesForKeys: nil) else { return }
         for file in files where file.lastPathComponent.hasPrefix("seg_")
                              && file.pathExtension == "m4a" {
+            // A recently finished segment may still belong to an in-flight upload.
+            guard let values = try? file.resourceValues(forKeys: [.contentModificationDateKey]),
+                  let modified = values.contentModificationDate,
+                  Date().timeIntervalSince(modified) > 86_400 else { continue }
             try? FileManager.default.removeItem(at: file)
         }
     }
@@ -221,6 +245,7 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
               let type = AVAudioSession.InterruptionType(rawValue: typeRaw) else { return }
 
         Task { @MainActor in
+            guard self.active else { return }
             switch type {
             case .began:
                 self.interrupted = true
@@ -240,12 +265,7 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
                         return
                     }
                     // Discard the interrupted segment and start fresh.
-                    if let r = self.recorder {
-                        let url = r.url
-                        r.stop()
-                        try? FileManager.default.removeItem(at: url)
-                        self.recorder = nil
-                    }
+                    self.discardCurrentSegment()
                     self.startNextSegment()
                 }
 
@@ -263,12 +283,7 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
         Task { @MainActor in
             if reason == .oldDeviceUnavailable && self.active && !self.interrupted {
                 // Input device yanked — restart segment to pick up new input.
-                if let r = self.recorder {
-                    let url = r.url
-                    r.stop()
-                    try? FileManager.default.removeItem(at: url)
-                    self.recorder = nil
-                }
+                self.discardCurrentSegment()
                 self.startRetryCount = 0
                 self.startNextSegment()
             }
@@ -280,14 +295,17 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
     nonisolated func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
         let url = recorder.url
         Task { @MainActor in
+            guard self.recorder === recorder, self.active else { return }
+            self.recorder = nil
+            self.isRecording = false
             let mySeq = self.seq
             self.seq += 1
 
             if flag {
                 // Validate: reject 0-byte or suspiciously small files (< 100 bytes = corrupt).
                 let fileSize = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? UInt64) ?? 0
-                if fileSize >= 100 {
-                    self.onSegment?(url, mySeq, self.segmentStartedAt, self.segmentSeconds * 1000)
+                if fileSize >= 100, let onSegment = self.onSegment {
+                    onSegment(url, mySeq, self.segmentStartedAt, self.segmentSeconds * 1000)
                 } else {
                     try? FileManager.default.removeItem(at: url)
                 }
@@ -303,10 +321,10 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
     }
 
     nonisolated func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
-        let url = recorder.url
         Task { @MainActor in
+            guard self.recorder === recorder, self.active else { return }
             self.lastError = "Encode error: \(error?.localizedDescription ?? "unknown")"
-            try? FileManager.default.removeItem(at: url)
+            self.discardCurrentSegment()
             if self.active && !self.interrupted {
                 self.startRetryCount = 0
                 self.startNextSegment()

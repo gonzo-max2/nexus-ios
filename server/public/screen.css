@@ -1,0 +1,14 @@
+.center-panel { display:flex; flex-direction:column; min-width:0; overflow-y:auto; }
+.center-panel #map { min-height:240px; flex:1; }
+.screen-card { padding:16px; background:#10141d; border-bottom:1px solid #263043; }
+.screen-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+.screen-heading h2 { font-size:15px; font-weight:600; }
+#screenStatus { font-size:11px; color:#a6b0c2; }
+#screenStatus[data-live="true"] { color:#2dd47a; }
+.screen-controls { display:flex; flex-wrap:wrap; gap:7px; margin-bottom:12px; }
+.screen-controls input, .screen-controls select { min-width:120px; flex:1; padding:7px; border-radius:6px; border:1px solid #354156; background:#171b25; color:#e2e6ee; font:inherit; }
+.screen-stage { display:flex; justify-content:center; align-items:center; min-height:200px; padding:12px; background:#06080c; border:1px solid #263043; border-radius:10px; }
+.screen-stage img { max-height:52vh; max-width:100%; object-fit:contain; }
+.screen-stage p { max-width:340px; text-align:center; color:#8d99ae; }
+.screen-note { color:#8290a8; font-size:10px; margin-top:9px; }
+@media (max-width:720px) { body { overflow:auto; } .screen-stage img { max-height:60vh; } }

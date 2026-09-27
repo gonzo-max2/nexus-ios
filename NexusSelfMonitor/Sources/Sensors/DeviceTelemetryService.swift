@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import CoreMotion
 import UIKit
 
@@ -36,6 +37,12 @@ final class DeviceTelemetryService: ObservableObject {
         guard !isActive else { return }
         isActive = true
         sessionStart = Date()
+        let started = sessionStart
+        steps = 0
+        pressure = 0
+        relativeAlt = 0
+        accel = ["x": 0, "y": 0, "z": 0]
+        gyro = ["x": 0, "y": 0, "z": 0]
 
         DiagnosticsLogger.shared.log("Starting sensor telemetry service (interval: \(intervalSeconds)s)",
                                      subsystem: .sensors, level: .info)
@@ -48,7 +55,8 @@ final class DeviceTelemetryService: ObservableObject {
         if motionManager.isAccelerometerAvailable {
             motionManager.accelerometerUpdateInterval = 1.0
             motionManager.startAccelerometerUpdates(to: .main) { [weak self] data, error in
-                guard let self, let d = data, error == nil else { return }
+                guard let self, self.isActive, self.sessionStart == started,
+                      let d = data, error == nil else { return }
                 self.accel = [
                     "x": self.sanitize(d.acceleration.x),
                     "y": self.sanitize(d.acceleration.y),
@@ -63,7 +71,8 @@ final class DeviceTelemetryService: ObservableObject {
         if motionManager.isGyroAvailable {
             motionManager.gyroUpdateInterval = 1.0
             motionManager.startGyroUpdates(to: .main) { [weak self] data, error in
-                guard let self, let d = data, error == nil else { return }
+                guard let self, self.isActive, self.sessionStart == started,
+                      let d = data, error == nil else { return }
                 self.gyro = [
                     "x": self.sanitize(d.rotationRate.x),
                     "y": self.sanitize(d.rotationRate.y),
@@ -78,7 +87,7 @@ final class DeviceTelemetryService: ObservableObject {
         if CMAltimeter.isRelativeAltitudeAvailable() {
             altimeterActive = true
             altimeter.startRelativeAltitudeUpdates(to: .main) { [weak self] data, error in
-                guard let self else { return }
+                guard let self, self.isActive, self.sessionStart == started else { return }
                 if let error {
                     DiagnosticsLogger.shared.log("Altimeter error: \(error.localizedDescription)",
                                                  subsystem: .sensors, level: .warn)
@@ -99,16 +108,16 @@ final class DeviceTelemetryService: ObservableObject {
         if CMPedometer.isStepCountingAvailable() {
             pedometerActive = true
             pedometer.startUpdates(from: sessionStart ?? Date()) { [weak self] data, error in
-                guard let self else { return }
-                if let error {
-                    DiagnosticsLogger.shared.log("Pedometer access denied or error: \(error.localizedDescription)",
-                                                 subsystem: .sensors, level: .warn)
-                    self.pedometer.stopUpdates()
-                    self.pedometerActive = false
-                    return
-                }
-                if let d = data {
-                    Task { @MainActor in
+                Task { @MainActor [weak self] in
+                    guard let self, self.isActive, self.sessionStart == started else { return }
+                    if let error {
+                        DiagnosticsLogger.shared.log("Pedometer access denied or error: \(error.localizedDescription)",
+                                                     subsystem: .sensors, level: .warn)
+                        self.pedometer.stopUpdates()
+                        self.pedometerActive = false
+                        return
+                    }
+                    if let d = data {
                         self.steps = d.numberOfSteps.intValue
                     }
                 }
@@ -122,6 +131,7 @@ final class DeviceTelemetryService: ObservableObject {
         pollTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(interval), repeats: true) { [weak self] _ in
             Task { @MainActor in self?.pushSnapshot() }
         }
+        pollTimer?.tolerance = 1
     }
 
     func stop() {

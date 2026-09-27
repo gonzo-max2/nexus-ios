@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Nexus Self-Monitor — Live Dashboard</title>
+<link rel="stylesheet" href="/screen.css" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <style>
   :root { color-scheme: dark; --bg:#0a0c10; --panel:#12151c; --card:#171b25;
@@ -142,8 +143,23 @@
     </div>
   </div>
 
-  <!-- MAP -->
-  <div id="map"></div>
+  <main class="center-panel">
+    <section class="screen-card" aria-label="Live iPhone screen">
+      <div class="screen-heading"><h2>iPhone screen</h2><span id="screenStatus" role="status">Not connected</span></div>
+      <form id="screenConnect" class="screen-controls">
+        <select id="screenDevice" aria-label="Device screen"><option value="">No devices yet</option></select>
+        <input id="screenToken" type="password" placeholder="Screen access token" aria-label="Screen access token" autocomplete="off" />
+        <button type="submit">View screen</button>
+        <button id="screenDisconnect" type="button">Disconnect</button>
+      </form>
+      <div class="screen-stage">
+        <img id="screenImage" alt="Live screen shared from the selected iPhone" hidden />
+        <p id="screenPlaceholder">Start a screen broadcast on the iPhone, then enter the server’s ingest token here.</p>
+      </div>
+      <p class="screen-note">Live preview · up to 2 frames/sec · no screen history stored · broadcast starts on the iPhone</p>
+    </section>
+    <div id="map"></div>
+  </main>
 
   <!-- RIGHT PANEL -->
   <div class="right-panel">
@@ -182,10 +198,11 @@
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/screen.js"></script>
 <script>
 'use strict';
-const map = L.map('map', { zoomControl: true }).setView([42.6977, 23.3219], 12);
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+const map = typeof L === 'undefined' ? null : L.map('map', { zoomControl: true }).setView([42.6977, 23.3219], 12);
+if (map) L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
   maxZoom: 19,
   attribution: '© OpenStreetMap © CARTO'
 }).addTo(map);
@@ -241,9 +258,11 @@ function renderDevices() {
   document.querySelectorAll('[data-del]').forEach((b) => {
     b.onclick = () => deleteDevice(b.getAttribute('data-del'));
   });
+  window.dispatchEvent(new CustomEvent('nexus:devices', { detail: Object.values(devicesState) }));
 }
 
 function upsertMarker(deviceId, name, lat, lng) {
+  if (!map) return;
   // Update or create marker
   if (markers[deviceId]) {
     markers[deviceId].setLatLng([lat, lng]);
@@ -416,6 +435,11 @@ function connect() {
   });
 
   es.addEventListener('stopped', (e) => {
+    const { deviceId } = JSON.parse(e.data);
+    if (devicesState[deviceId]) {
+      devicesState[deviceId].activeSessions = Math.max(0, (devicesState[deviceId].activeSessions || 0) - 1);
+      renderDevices();
+    }
     log('session stopped', '⏹️');
     addTimeline('⏹️', 'Session stopped');
   });

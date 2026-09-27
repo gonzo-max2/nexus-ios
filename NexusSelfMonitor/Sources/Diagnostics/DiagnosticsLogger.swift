@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import os
 import UIKit
 
@@ -77,10 +78,15 @@ public final class DiagnosticsLogger: ObservableObject {
         }
 
         public var formattedTime: String {
-            let df = DateFormatter()
-            df.dateFormat = "HH:mm:ss.SSS"
-            return df.string(from: timestamp)
+            Self.timeFormatter.string(from: timestamp)
         }
+
+        private static let timeFormatter: DateFormatter = {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = "HH:mm:ss.SSS"
+            return formatter
+        }()
 
         public var formattedLine: String {
             "[\(formattedTime)] [\(level.rawValue)] [\(subsystem.rawValue)] \(message)"
@@ -92,12 +98,8 @@ public final class DiagnosticsLogger: ObservableObject {
     @Published public private(set) var errorCount: Int = 0
 
     private let maxEntries: Int = 300
-    private var osLoggers: [Subsystem: Logger] = [:]
 
     private init() {
-        for sub in Subsystem.allCases {
-            osLoggers[sub] = Logger(subsystem: "com.nexus.selfmonitor", category: sub.osLogCategory)
-        }
         log("Diagnostics subsystem initialized. Ready for telemetry and traces.", subsystem: .app, level: .info)
     }
 

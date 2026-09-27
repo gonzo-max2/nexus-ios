@@ -40,6 +40,11 @@ struct Settings: Codable, Equatable {
     var baseURL: URL? {
         var s = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
         while s.hasSuffix("/") { s.removeLast() }
-        return URL(string: s)
+        guard let url = URL(string: s),
+              let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              let host = url.host, !host.isEmpty,
+              url.query == nil, url.fragment == nil,
+              url.user == nil, url.password == nil else { return nil }
+        return url
     }
 }

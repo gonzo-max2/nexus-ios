@@ -19,7 +19,8 @@ struct ConsentView: View {
                     bullet("iOS additionally shows its orange microphone dot whenever the mic is live — including in the background. Recording can never be silent.")
                     bullet("You are responsible for informing people around you and for following the laws where you are. Recording others without the consent they’re entitled to may be illegal.")
                     bullet("You can stop instantly, and delete everything stored for this device from the dashboard or Settings.")
-                    bullet("There is no hidden mode: no stealth, no auto-start, no persistence. Closing the app stops it.")
+                    bullet("Optional screen sharing shows other apps on your dashboard. It starts only through the iPhone’s visible Start Broadcast control and can be stopped with the iOS recording indicator.")
+                    bullet("There is no hidden mode or automatic recording on launch. Stop monitoring in the app; stop screen sharing using the iOS recording indicator or Disable screen sharing.")
                 }
 
                 Toggle("I understand and consent to recording my own audio and location.",

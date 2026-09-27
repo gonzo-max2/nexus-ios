@@ -4,6 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { URL } = require('url');
 const { safeSegment, validLat, validLng, isFiniteNum } = require('./util');
+const { ScreenStream } = require('./screen');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const STATIC_TYPES = {
@@ -13,14 +14,21 @@ const STATIC_TYPES = {
 
 function readBody(req, limit) {
   return new Promise((resolve, reject) => {
-    const chunks = []; let size = 0;
+    const chunks = []; let size = 0; let tooLarge = false;
     req.on('data', (c) => {
+      if (tooLarge) return;
       size += c.length;
-      if (size > limit) { reject(Object.assign(new Error('payload too large'), { statusCode: 413 })); req.destroy(); return; }
+      if (size > limit) {
+        tooLarge = true;
+        chunks.length = 0;
+        reject(Object.assign(new Error('payload too large'), { statusCode: 413 }));
+        return;
+      }
       chunks.push(c);
     });
     req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
+    req.on('aborted', () => reject(Object.assign(new Error('request aborted'), { statusCode: 400 })));
   });
 }
 async function readJson(req, limit) {
@@ -31,6 +39,7 @@ async function readJson(req, limit) {
 }
 
 function createHandler({ config, store, sse, rateLimit, logger }) {
+  const screen = new ScreenStream(store);
   function cors(res) {
     res.setHeader('Access-Control-Allow-Origin', config.corsOrigin);
     res.setHeader('Vary', 'Origin');
@@ -151,6 +160,7 @@ function createHandler({ config, store, sse, rateLimit, logger }) {
   function handleDelete(res, deviceId) {
     const id = safeSegment(deviceId);
     store.deleteDevice(id);
+    screen.deleteDevice(id);
     sse.broadcast('deleted', { deviceId: id });
     logger.info('device.deleted', { deviceId: id });
     return json(res, 200, { deleted: true });
@@ -182,6 +192,50 @@ function createHandler({ config, store, sse, rateLimit, logger }) {
         if (!authOk(req)) return json(res, 401, { error: 'unauthorized' });
         const key = clientKey(req, safeSegment(req.headers['x-device-id']));
         if (!rateLimit(key)) return json(res, 429, { error: 'rate_limited' });
+      }
+
+      // Screen content always requires a configured token, including reads.
+      if (p === '/api/v1/screen' || p.startsWith('/api/v1/screen/')) {
+        res.setHeader('Cache-Control', 'no-store');
+        if (!config.ingestToken) return json(res, 503, { error: 'screen_requires_ingest_token' });
+        const validId = (value) => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
+        if (p === '/api/v1/screen' && req.method === 'POST') {
+          const deviceId = req.headers['x-device-id'];
+          const sessionId = req.headers['x-session-id'];
+          const sequence = req.headers['x-seq'];
+          if (!validId(deviceId) || !validId(sessionId) || !/^\d+$/.test(sequence || '')) {
+            return json(res, 400, { error: 'invalid_screen_headers' });
+          }
+          if (req.headers['content-type'] !== 'image/jpeg') return json(res, 415, { error: 'jpeg_required' });
+          if (!screen.activeSession(deviceId, sessionId)) return json(res, 409, { error: 'screen_session_inactive' });
+          const bytes = await readBody(req, screen.maxBytes);
+          const result = screen.put(deviceId, sessionId, Number(sequence), bytes);
+          return json(res, result.status, result.error ? { error: result.error } : { ok: true });
+        }
+        if (p === '/api/v1/screen/stop' && req.method === 'POST') {
+          const body = await readJson(req, config.maxJsonBytes);
+          if (!validId(body?.deviceId) || !validId(body?.sessionId)) return json(res, 400, { error: 'invalid_screen_session' });
+          screen.stop(body.deviceId, body.sessionId);
+          sse.broadcast('stopped', { deviceId: body.deviceId, sessionId: body.sessionId });
+          return json(res, 200, { ok: true });
+        }
+        const match = p.match(/^\/api\/v1\/screen\/([A-Za-z0-9_-]{1,128})$/);
+        if (match && req.method === 'GET') {
+          const frame = screen.get(match[1]);
+          if (!frame) return json(res, 404, { error: 'screen_offline' });
+          cors(res);
+          const etag = `"${frame.sessionId}:${frame.seq}"`;
+          res.setHeader('ETag', etag);
+          res.setHeader('X-Frame-Age-Ms', String(Math.max(0, Date.now() - frame.receivedAt)));
+          if (req.headers['if-none-match'] === etag) {
+            res.writeHead(304);
+            return res.end();
+          }
+          res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': frame.bytes.length,
+            'X-Frame-Seq': String(frame.seq), 'X-Received-At': String(frame.receivedAt) });
+          return res.end(frame.bytes);
+        }
+        return json(res, 404, { error: 'not_found' });
       }
 
       if (p === '/api/v1/session' && req.method === 'POST') return await handleSession(req, res);

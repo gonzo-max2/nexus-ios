@@ -64,6 +64,25 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             SYMROOT=build
 
+      - name: Run native regression tests
+        working-directory: NexusSelfMonitor
+        run: |
+          SIMULATOR_ID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for runtime, devices in d["devices"].items() if "iOS" in runtime for x in devices if x["name"].startswith("iPhone")))')
+          xcodebuild test \
+            -project NexusSelfMonitor.xcodeproj \
+            -scheme NexusSelfMonitor \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
+            -resultBundlePath TestResults.xcresult \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Upload native test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NexusSelfMonitor-test-results
+          path: NexusSelfMonitor/TestResults.xcresult
+          if-no-files-found: ignore
+
       - name: Package Payload into Unsigned IPA
         working-directory: NexusSelfMonitor
         run: |
@@ -78,3 +97,15 @@ jobs:
           name: NexusSelfMonitor-unsigned-ipa
           path: NexusSelfMonitor/build/NexusSelfMonitor-unsigned.ipa
           retention-days: 14
+
+  server-tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm test
+        working-directory: server

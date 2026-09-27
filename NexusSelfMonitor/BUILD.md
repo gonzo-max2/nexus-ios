@@ -2,6 +2,22 @@
 
 The Nexus Self-Monitor app is built with native Swift 5 and SwiftUI targeting iOS 16.0+. The repository uses **XcodeGen** (`project.yml`) to generate a reproducible `.xcodeproj` without checking in bulky binary project metadata.
 
+The app now includes the `ScreenBroadcast` ReplayKit extension and a native
+`NexusSelfMonitorTests` target. See [screen sharing setup](../docs/SCREEN_SHARING.md)
+for signing and on-device broadcast requirements. An unsigned IPA is a build
+artifact, not an installable app: both targets must be signed with matching App
+Group entitlements before installing on the iPhone XR.
+
+Run native regressions on an available simulator after generating the project:
+
+```bash
+xcodebuild test -project NexusSelfMonitor.xcodeproj -scheme NexusSelfMonitor \
+  -destination 'platform=iOS Simulator,name=iPhone 15' CODE_SIGNING_ALLOWED=NO
+```
+
+Replace the simulator name with one installed in Xcode. CI selects an available
+iPhone automatically and uploads its `.xcresult` along with the unsigned IPA.
+
 ---
 
 ## Option 1: Build on macOS with Xcode (Local Development)

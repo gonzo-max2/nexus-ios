@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 /// Persistent retry queue for failed uploads. Items are saved to disk and
 /// retried with jittered exponential backoff.
@@ -18,7 +19,11 @@ final class UploadQueue: ObservableObject {
 
     private var items: [QueueItem] = []
     private var retryTimer: Timer?
+    private var processingTask: Task<Void, Never>?
     private var uploadHandler: ((QueueItem) async -> Bool)?
+    private var processingEnabled = false
+    private var processingGeneration = UUID()
+    private var inFlightID: String?
 
     private let maxRetries: Int = 5
     private let maxQueueCount: Int = 150
@@ -40,10 +45,10 @@ final class UploadQueue: ObservableObject {
         var nextRetryAt: Date = Date()
     }
 
-    init() {
+    init(directory: URL? = nil) {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        queueDir = appSupport.appendingPathComponent("nexus_upload_queue", isDirectory: true)
+        queueDir = directory ?? appSupport.appendingPathComponent("nexus_upload_queue", isDirectory: true)
         
         do {
             try FileManager.default.createDirectory(at: queueDir, withIntermediateDirectories: true)
@@ -120,53 +125,68 @@ final class UploadQueue: ObservableObject {
     }
 
     func startProcessing() {
+        processingEnabled = true
         ensureRetryTimer()
     }
 
     func stopProcessing() {
+        processingEnabled = false
+        processingGeneration = UUID()
         retryTimer?.invalidate()
         retryTimer = nil
-        isProcessing = false
+        processingTask?.cancel()
+        // The suspended handler still owns the processing slot until it returns.
     }
 
     /// User or system triggered immediate retry attempt.
     func retryNow() {
+        processingEnabled = true
         let now = Date()
         for i in 0..<items.count {
             items[i].nextRetryAt = now
         }
-        Task { await processQueue() }
+        scheduleProcessing()
     }
 
     // MARK: - Queue Processing & Circuit Breaker
 
     private func ensureRetryTimer() {
-        guard retryTimer == nil, !items.isEmpty else { return }
+        guard processingEnabled, retryTimer == nil, !items.isEmpty else { return }
         retryTimer = Timer.scheduledTimer(withTimeInterval: 6.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.processQueue() }
+            Task { @MainActor in self?.scheduleProcessing() }
+        }
+        retryTimer?.tolerance = 1
+    }
+
+    private func scheduleProcessing() {
+        guard processingEnabled, processingTask == nil else { return }
+        processingTask = Task {
+            await processQueue()
+            processingTask = nil
         }
     }
 
     private func processQueue() async {
-        guard !isProcessing, let handler = uploadHandler, !items.isEmpty else { return }
+        guard processingEnabled, !isProcessing, let handler = uploadHandler, !items.isEmpty else { return }
         isProcessing = true
-        defer { isProcessing = false }
+        let generation = processingGeneration
+        defer {
+            inFlightID = nil
+            isProcessing = false
+            if items.isEmpty {
+                retryTimer?.invalidate()
+                retryTimer = nil
+            } else {
+                ensureRetryTimer()
+            }
+        }
 
         let now = Date()
-        var remaining: [QueueItem] = []
-        var circuitBroken = false
-
-        for var item in items {
-            // If network failed previously in this cycle, stop processing remaining items to avoid redundant timeouts.
-            if circuitBroken {
-                remaining.append(item)
-                continue
-            }
-
-            guard item.nextRetryAt <= now else {
-                remaining.append(item)
-                continue
-            }
+        // Snapshot identities only. Enqueues and evictions may happen at every await.
+        let batch = items.filter { $0.nextRetryAt <= now }.map(\.id)
+        for id in batch {
+            guard processingEnabled, generation == processingGeneration else { break }
+            guard var item = items.first(where: { $0.id == id }) else { continue }
 
             // Verify file integrity before attempting upload.
             let fileURL = URL(fileURLWithPath: item.filePath)
@@ -176,17 +196,25 @@ final class UploadQueue: ObservableObject {
                 DiagnosticsLogger.shared.log("Purging missing or 0-byte item: \(item.kind) #\(item.seq)",
                                              subsystem: .queue, level: .error)
                 try? FileManager.default.removeItem(at: fileURL)
+                items.removeAll { $0.id == id }
+                enforceQueueBounds()
+                saveToDisk()
                 continue
             }
 
             DiagnosticsLogger.shared.log("Retrying upload for \(item.kind) #\(item.seq) (Attempt \(item.retryCount + 1)/\(maxRetries))",
                                          subsystem: .queue, level: .info)
 
+            inFlightID = id
             let success = await handler(item)
+            inFlightID = nil
+            guard processingEnabled, generation == processingGeneration else { break }
+            guard let index = items.firstIndex(where: { $0.id == id }) else { continue }
             if success {
                 DiagnosticsLogger.shared.log("Successfully uploaded queued \(item.kind) #\(item.seq)",
                                              subsystem: .queue, level: .info)
                 try? FileManager.default.removeItem(at: fileURL)
+                items.remove(at: index)
             } else {
                 item.retryCount += 1
                 if item.retryCount < maxRetries {
@@ -195,7 +223,7 @@ final class UploadQueue: ObservableObject {
                     let jitterFactor = Double.random(in: 0.8...1.2)
                     let finalDelay = baseDelay * jitterFactor
                     item.nextRetryAt = Date().addingTimeInterval(finalDelay)
-                    remaining.append(item)
+                    items[index] = item
 
                     DiagnosticsLogger.shared.log("Retry failed for \(item.kind) #\(item.seq). Next retry in \(Int(finalDelay))s",
                                                  subsystem: .queue, level: .warn)
@@ -203,20 +231,13 @@ final class UploadQueue: ObservableObject {
                     DiagnosticsLogger.shared.log("Discarding \(item.kind) #\(item.seq) after \(maxRetries) failed retries.",
                                                  subsystem: .queue, level: .error)
                     try? FileManager.default.removeItem(at: fileURL)
+                    items.remove(at: index)
                 }
-
-                // Trip circuit breaker on failure to prevent hammering when offline
-                circuitBroken = true
             }
-        }
-
-        items = remaining
-        enforceQueueBounds()
-        saveToDisk()
-
-        if items.isEmpty {
-            retryTimer?.invalidate()
-            retryTimer = nil
+            enforceQueueBounds()
+            saveToDisk()
+            // Stop this batch after one failure instead of timing out every item.
+            if !success { break }
         }
     }
 
@@ -224,15 +245,10 @@ final class UploadQueue: ObservableObject {
 
     private func enforceQueueBounds() {
         // Enforce item count limit
-        if items.count > maxQueueCount {
-            let excess = items.count - maxQueueCount
-            let discarded = items.prefix(excess)
-            for item in discarded {
-                try? FileManager.default.removeItem(atPath: item.filePath)
-            }
-            items.removeFirst(excess)
-            DiagnosticsLogger.shared.log("Queue count capped: purged \(excess) oldest items.",
-                                         subsystem: .queue, level: .warn)
+        while items.count > maxQueueCount,
+              let index = items.firstIndex(where: { $0.id != inFlightID }) {
+            let discarded = items.remove(at: index)
+            try? FileManager.default.removeItem(atPath: discarded.filePath)
         }
 
         // Calculate and enforce byte size limit
@@ -241,8 +257,9 @@ final class UploadQueue: ObservableObject {
             currentBytes += item.byteSize
         }
 
-        while currentBytes > maxQueueDiskBytes && !items.isEmpty {
-            let evicted = items.removeFirst()
+        while currentBytes > maxQueueDiskBytes,
+              let index = items.firstIndex(where: { $0.id != inFlightID }) {
+            let evicted = items.remove(at: index)
             currentBytes -= evicted.byteSize
             try? FileManager.default.removeItem(atPath: evicted.filePath)
             DiagnosticsLogger.shared.log("Queue disk limit exceeded: evicted item \(evicted.id)",

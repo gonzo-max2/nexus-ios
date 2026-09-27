@@ -23,6 +23,7 @@ struct MonitorView: View {
                     statsPanel
                     sensorPanel
                     cameraPanel
+                    ScreenBroadcastView()
 
                     if let err = model.lastErrorText {
                         Text(err)
@@ -51,7 +52,7 @@ struct MonitorView: View {
                     }
 
                     Button(action: { model.toggleMonitoring() }) {
-                        Text(model.isMonitoring ? "Stop" : "Start recording")
+                        Text(model.isStarting ? "Cancel start" : (model.isMonitoring ? "Stop" : "Start recording"))
                             .font(.headline)
                             .frame(maxWidth: .infinity)
                             .padding()
@@ -152,7 +153,7 @@ struct MonitorView: View {
                 .fill(model.isMonitoring ? Color.red : Color.gray)
                 .frame(width: 14, height: 14)
                 .opacity(model.isMonitoring ? 1 : 0.5)
-            Text(model.isMonitoring ? "● RECORDING & STREAMING" : "Not recording")
+            Text(audio.isRecording ? "● RECORDING & STREAMING" : (model.isMonitoring ? "Microphone paused" : "Not recording"))
                 .font(.subheadline.weight(.semibold))
             Spacer()
         }

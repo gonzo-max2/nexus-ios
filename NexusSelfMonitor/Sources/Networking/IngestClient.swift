@@ -6,8 +6,12 @@ actor IngestClient {
     private let settings: Settings
     private let session: URLSession
 
-    init(settings: Settings) {
+    init(settings: Settings, session: URLSession? = nil) {
         self.settings = settings
+        if let session {
+            self.session = session
+            return
+        }
         let cfg = URLSessionConfiguration.default
         cfg.timeoutIntervalForRequest = 20.0
         cfg.timeoutIntervalForResource = 45.0
@@ -15,6 +19,8 @@ actor IngestClient {
         cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
         self.session = URLSession(configuration: cfg)
     }
+
+    deinit { session.invalidateAndCancel() }
 
     public enum ClientError: LocalizedError {
         case badURL
@@ -164,10 +170,35 @@ actor IngestClient {
     }
 
     func stopSession(sessionId: String) async {
-        guard var req = try? makeRequest("/api/v1/session/stop", method: "POST", contentType: "application/json", timeout: 10.0) else { return }
-        req.httpBody = try? JSONEncoder().encode(Wire.StopRequest(deviceId: settings.deviceId, sessionId: sessionId))
-        _ = try? await executeData(for: req)
-        DiagnosticsLogger.shared.log("Stopped session on server: \(sessionId)", subsystem: .network, level: .info)
+        do {
+            var req = try makeRequest("/api/v1/session/stop", method: "POST", contentType: "application/json", timeout: 10.0)
+            req.httpBody = try JSONEncoder().encode(Wire.StopRequest(deviceId: settings.deviceId, sessionId: sessionId))
+            let (data, response) = try await executeData(for: req)
+            try handleStatus(response.statusCode, data: data)
+            DiagnosticsLogger.shared.log("Stopped session on server: \(sessionId)", subsystem: .network, level: .info)
+        } catch {
+            DiagnosticsLogger.shared.log("Could not stop server session \(sessionId): \(error.localizedDescription)",
+                                         subsystem: .network, level: .warn)
+        }
+    }
+
+    /// Retry persisted media directly from disk without allocating a second media buffer.
+    func uploadMedia(sessionId: String, kind: String, ext: String,
+                     contentType: String, seq: Int, fileURL: URL,
+                     startedAt: Int64, durationMs: Int?) async throws {
+        var req = try makeRequest("/api/v1/media", method: "POST", contentType: contentType, timeout: 30.0)
+        req.setValue(settings.deviceId, forHTTPHeaderField: "X-Device-Id")
+        req.setValue(sessionId, forHTTPHeaderField: "X-Session-Id")
+        req.setValue(String(seq), forHTTPHeaderField: "X-Seq")
+        req.setValue(String(startedAt), forHTTPHeaderField: "X-Started-At")
+        req.setValue(kind, forHTTPHeaderField: "X-Media-Kind")
+        req.setValue(ext, forHTTPHeaderField: "X-File-Ext")
+        if let durationMs { req.setValue(String(durationMs), forHTTPHeaderField: "X-Duration-Ms") }
+        let (data, response) = try await session.upload(for: req, fromFile: fileURL)
+        guard let response = response as? HTTPURLResponse else {
+            throw ClientError.http(code: -1, body: "Non-HTTP response")
+        }
+        try handleStatus(response.statusCode, data: data)
     }
 
     /// Upload any generic media blob (e.g. periodic photo).

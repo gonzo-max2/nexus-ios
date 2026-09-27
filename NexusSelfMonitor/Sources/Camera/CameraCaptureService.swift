@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import AVFoundation
 import UIKit
 
@@ -28,10 +29,12 @@ final class CameraCaptureService: NSObject, ObservableObject {
     private var active = false
     private var usingFront = false
     private var captureInFlight = false   // Prevent overlapping captures
+    private var captureID: Int64?
     private var intervalSeconds = 10
     private var jpegQuality: CGFloat = 0.6
 
     private let sessionQueue = DispatchQueue(label: "com.nexus.camera.session", qos: .userInitiated)
+    private let imageQueue = DispatchQueue(label: "com.nexus.camera.jpeg", qos: .utility)
 
     // MARK: - Permission
 
@@ -47,17 +50,19 @@ final class CameraCaptureService: NSObject, ObservableObject {
 
     // MARK: - Lifecycle
 
-    func start(intervalSeconds: Int, useFrontCamera: Bool = false) {
+    func start(intervalSeconds: Int, useFrontCamera: Bool = false, resetSequence: Bool = true) {
         guard !active else { return }
         active = true
         usingFront = useFrontCamera
         self.intervalSeconds = max(3, intervalSeconds)
-        seq = 0
-        photosTaken = 0
+        if resetSequence {
+            seq = 0
+            photosTaken = 0
+        }
         lastError = nil
         captureInFlight = false
 
-        guard setupSession() else {
+        guard setupSession(), let session = captureSession else {
             active = false
             return
         }
@@ -66,13 +71,15 @@ final class CameraCaptureService: NSObject, ObservableObject {
 
         // Start session on background queue to avoid blocking main thread.
         sessionQueue.async { [weak self] in
-            self?.captureSession?.startRunning()
-            Task { @MainActor in
-                self?.isCapturing = true
+            session.startRunning()
+            Task { @MainActor [weak self] in
+                guard let self, self.active, self.captureSession === session else { return }
+                self.isCapturing = session.isRunning
                 // Fire immediately, then repeat.
-                self?.capturePhoto()
-                self?.timer = Timer.scheduledTimer(
-                    withTimeInterval: TimeInterval(self?.intervalSeconds ?? 10),
+                self.capturePhoto()
+                self.timer?.invalidate()
+                self.timer = Timer.scheduledTimer(
+                    withTimeInterval: TimeInterval(self.intervalSeconds),
                     repeats: true) { [weak self] _ in
                     Task { @MainActor in self?.capturePhoto() }
                 }
@@ -85,6 +92,7 @@ final class CameraCaptureService: NSObject, ObservableObject {
         timer?.invalidate()
         timer = nil
         captureInFlight = false
+        captureID = nil
         unregisterNotifications()
 
         let session = captureSession
@@ -101,7 +109,7 @@ final class CameraCaptureService: NSObject, ObservableObject {
         let savedInterval = intervalSeconds
         stop()
         usingFront.toggle()
-        start(intervalSeconds: savedInterval, useFrontCamera: usingFront)
+        start(intervalSeconds: savedInterval, useFrontCamera: usingFront, resetSequence: false)
     }
 
     /// Reduce JPEG quality under memory pressure.
@@ -114,6 +122,7 @@ final class CameraCaptureService: NSObject, ObservableObject {
     private func setupSession() -> Bool {
         let session = AVCaptureSession()
         session.beginConfiguration()
+        defer { session.commitConfiguration() }
         session.sessionPreset = .medium
 
         let position: AVCaptureDevice.Position = usingFront ? .front : .back
@@ -152,7 +161,6 @@ final class CameraCaptureService: NSObject, ObservableObject {
             return false
         }
         session.addOutput(output)
-        session.commitConfiguration()
 
         captureSession = session
         photoOutput = output
@@ -170,6 +178,7 @@ final class CameraCaptureService: NSObject, ObservableObject {
 
         captureInFlight = true
         let settings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.jpeg])
+        captureID = settings.uniqueID
         settings.flashMode = .off
         output.capturePhoto(with: settings, delegate: self)
     }
@@ -195,32 +204,44 @@ final class CameraCaptureService: NSObject, ObservableObject {
     }
 
     @objc nonisolated private func sessionRuntimeError(_ notification: Notification) {
-        guard let error = notification.userInfo?[AVCaptureSessionErrorKey] as? AVError else { return }
+        guard let error = notification.userInfo?[AVCaptureSessionErrorKey] as? AVError,
+              let session = notification.object as? AVCaptureSession else { return }
         Task { @MainActor in
+            guard self.active, self.captureSession === session else { return }
             self.lastError = "Camera error: \(error.localizedDescription)"
+            self.captureInFlight = false
+            self.captureID = nil
             // Attempt auto-restart after a hardware glitch.
             if self.active, error.code == .mediaServicesWereReset {
-                self.sessionQueue.async { [weak self] in
-                    self?.captureSession?.startRunning()
-                }
+                self.restartSession(session)
             }
         }
     }
 
     @objc nonisolated private func sessionWasInterrupted(_ notification: Notification) {
+        guard let session = notification.object as? AVCaptureSession else { return }
         Task { @MainActor in
+            guard self.active, self.captureSession === session else { return }
             self.isCapturing = false
             self.captureInFlight = false
+            self.captureID = nil
         }
     }
 
     @objc nonisolated private func sessionInterruptionEnded(_ notification: Notification) {
+        guard let session = notification.object as? AVCaptureSession else { return }
         Task { @MainActor in
-            if self.active {
-                self.sessionQueue.async { [weak self] in
-                    self?.captureSession?.startRunning()
-                    Task { @MainActor in self?.isCapturing = true }
-                }
+            guard self.active, self.captureSession === session else { return }
+            self.restartSession(session)
+        }
+    }
+
+    private func restartSession(_ session: AVCaptureSession) {
+        sessionQueue.async { [weak self] in
+            session.startRunning()
+            Task { @MainActor [weak self] in
+                guard let self, self.active, self.captureSession === session else { return }
+                self.isCapturing = session.isRunning
             }
         }
     }
@@ -231,28 +252,51 @@ extension CameraCaptureService: AVCapturePhotoCaptureDelegate {
     nonisolated func photoOutput(_ output: AVCapturePhotoOutput,
                                   didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
         Task { @MainActor in
-            self.captureInFlight = false  // Always release the guard.
+            let id = photo.resolvedSettings.uniqueID
+            guard self.active, self.photoOutput === output, self.captureID == id else { return }
 
             if let error {
+                self.captureInFlight = false
+                self.captureID = nil
                 self.lastError = "Photo: \(error.localizedDescription)"
                 return
             }
             guard let data = photo.fileDataRepresentation() else {
+                self.captureInFlight = false
+                self.captureID = nil
                 self.lastError = "Photo: no data representation."
                 return
             }
 
-            // Compress with adaptive quality.
-            let compressed = UIImage(data: data)?
-                .jpegData(compressionQuality: self.jpegQuality) ?? data
+            let quality = self.jpegQuality
+            self.imageQueue.async { [weak self] in
+                let compressed = autoreleasepool {
+                    UIImage(data: data)?.jpegData(compressionQuality: quality) ?? data
+                }
+                Task { @MainActor [weak self] in
+                    guard let self, self.active, self.photoOutput === output, self.captureID == id else { return }
+                    self.captureInFlight = false
+                    self.captureID = nil
+                    guard compressed.count >= 500 else { return }
+                    let mySeq = self.seq
+                    self.seq += 1
+                    self.photosTaken += 1
+                    self.onPhoto?(compressed, mySeq)
+                }
+            }
+        }
+    }
 
-            // Reject suspiciously small images (< 500 bytes = likely corrupt).
-            guard compressed.count >= 500 else { return }
-
-            let mySeq = self.seq
-            self.seq += 1
-            self.photosTaken += 1
-            self.onPhoto?(compressed, mySeq)
+    nonisolated func photoOutput(_ output: AVCapturePhotoOutput,
+                                  didFinishCaptureFor resolvedSettings: AVCaptureResolvedPhotoSettings,
+                                  error: Error?) {
+        guard let error else { return }
+        Task { @MainActor in
+            guard self.active, self.photoOutput === output,
+                  self.captureID == resolvedSettings.uniqueID else { return }
+            self.captureInFlight = false
+            self.captureID = nil
+            self.lastError = "Photo capture: \(error.localizedDescription)"
         }
     }
 }
