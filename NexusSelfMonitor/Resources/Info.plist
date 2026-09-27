@@ -36,5 +36,14 @@
     <string>audio</string>
     <string>location</string>
   </array>
+
+  <!-- Network: allow communication with self-hosted / local network HTTP ingest servers (e.g. LAN IP:8787) -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsArbitraryLoads</key>
+    <true/>
+    <key>NSAllowsLocalNetworking</key>
+    <true/>
+  </dict>
 </dict>
 </plist>

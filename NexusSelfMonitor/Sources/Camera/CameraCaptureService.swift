@@ -117,8 +117,21 @@ final class CameraCaptureService: NSObject, ObservableObject {
         session.sessionPreset = .medium
 
         let position: AVCaptureDevice.Position = usingFront ? .front : .back
-        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position) else {
+
+        // Multi-device discovery covering iPhone XR single 12MP wide rear and 7MP TrueDepth front camera
+        let deviceTypes: [AVCaptureDevice.DeviceType] = [
+            .builtInWideAngleCamera,
+            .builtInTrueDepthCamera
+        ]
+        let discovery = AVCaptureDevice.DiscoverySession(
+            deviceTypes: deviceTypes,
+            mediaType: .video,
+            position: position
+        )
+        guard let device = discovery.devices.first ?? AVCaptureDevice.default(for: .video) else {
             lastError = "No \(usingFront ? "front" : "back") camera available."
+            DiagnosticsLogger.shared.log("Failed to find camera device for position \(usingFront ? "front" : "back")",
+                                         subsystem: .camera, level: .error)
             return false
         }
         do {

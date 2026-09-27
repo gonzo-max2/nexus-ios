@@ -67,6 +67,20 @@ final class AppModel: ObservableObject {
                 self?.handleMemoryWarning()
             }
 
+        // Observe thermal state changes for devices like iPhone XR
+        NotificationCenter.default.addObserver(
+            forName: ProcessInfo.thermalStateDidChangeNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                self?.handleThermalStateChange()
+            }
+
+        // Observe Low Power Mode toggles
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name.NSProcessInfoPowerStateDidChange,
+            object: nil, queue: .main) { [weak self] _ in
+                self?.handlePowerStateChange()
+            }
+
         // Start health check polling.
         startHealthPolling()
 
@@ -431,6 +445,39 @@ final class AppModel: ObservableObject {
             telemetry.onTelemetry = nil
             DiagnosticsLogger.shared.log("Sensor telemetry shed under memory pressure.", subsystem: .sensors, level: .warn)
         }
+    }
+
+    // MARK: - Thermal & Power Governance (A12 / iPhone XR)
+
+    private func handleThermalStateChange() {
+        let state = ProcessInfo.processInfo.thermalState
+        switch state {
+        case .nominal:
+            DiagnosticsLogger.shared.log("Thermal state is Nominal.", subsystem: .app, level: .debug)
+            camera.setLowMemoryMode(false)
+        case .fair:
+            DiagnosticsLogger.shared.log("Thermal state is Fair.", subsystem: .app, level: .info)
+        case .serious:
+            DiagnosticsLogger.shared.log("Thermal state Serious! Throttling camera capture to protect hardware.",
+                                         subsystem: .app, level: .warn)
+            camera.setLowMemoryMode(true)
+        case .critical:
+            DiagnosticsLogger.shared.log("Thermal state Critical! Pausing camera capture to avoid thermal shutdown.",
+                                         subsystem: .app, level: .error)
+            if camera.isCapturing {
+                camera.stop()
+                lastErrorText = "Camera paused due to high device temperature."
+            }
+        @unknown default:
+            break
+        }
+    }
+
+    private func handlePowerStateChange() {
+        let isLowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+        DiagnosticsLogger.shared.log("Low Power Mode changed: \(isLowPower ? "Enabled" : "Disabled")",
+                                     subsystem: .app, level: .info)
+        camera.setLowMemoryMode(isLowPower)
     }
 
     // MARK: - Crash Recovery
