@@ -24,6 +24,8 @@ targets:
       - path: Sources
       - path: Resources
         buildPhase: resources
+        excludes:
+          - "Info.plist"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.nexus.selfmonitor.app
