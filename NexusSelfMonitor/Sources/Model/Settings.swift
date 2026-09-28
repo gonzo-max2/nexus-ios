@@ -38,6 +38,8 @@ struct Settings: Codable, Equatable {
         return value.hasPrefix("$(") ? "" : value
     }
 
+    init() {}
+
     /// Decodes defensively: keys missing from a payload written by an older
     /// build fall back to this build's defaults instead of throwing.
     ///
