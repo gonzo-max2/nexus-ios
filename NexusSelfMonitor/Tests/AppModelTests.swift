@@ -56,19 +56,24 @@ final class AppModelTests: XCTestCase {
     /// start attempt with no interaction from the menu.
     @MainActor
     func testReconcileStartsWithoutAnyUITap() async {
+        let entered = expectation(description: "Startup initiated")
+        var resume: CheckedContinuation<Bool, Never>?
         var settings = Settings()
         settings.serverURL = "http://192.0.2.1:8787"  // TEST-NET-1, never routable
         settings.ingestToken = "test-token"
-        let model = AppModel(settings: settings, microphonePermission: { true },
-                             automaticStartup: false)
+        let model = AppModel(settings: settings, microphonePermission: {
+            await withCheckedContinuation {
+                resume = $0
+                entered.fulfill()
+            }
+        }, automaticStartup: false)
         model.hasConsented = true
 
         model.reconcile(.launch)
 
-        for _ in 0..<20 where !model.isStarting {
-            try? await Task.sleep(nanoseconds: 10_000_000)
-        }
+        await fulfillment(of: [entered], timeout: 2)
         XCTAssertTrue(model.isStarting, "engine must start the session without any UI tap")
+        resume?.resume(returning: false)
         model.stop()
     }
 
