@@ -199,7 +199,13 @@ def png_alpha_extrema(data: bytes) -> tuple[int, int, int, int]:
         raise ValueError(f"icon must be 8-bit RGBA (got bit depth {bit_depth}, colour type {color_type})")
     if compression != 0 or filter_method != 0 or interlace != 0:
         raise ValueError("unsupported PNG encoding (compression/filter/interlace)")
-    raw = zlib.decompress(bytes(compressed))
+    try:
+        raw = zlib.decompress(bytes(compressed))
+    except zlib.error:
+        try:
+            raw = zlib.decompress(bytes(compressed), -zlib.MAX_WBITS)
+        except zlib.error:
+            raw = zlib.decompress(bytes(compressed), zlib.MAX_WBITS | 32)
     if not raw:
         raise ValueError("empty image data")
     # Fast path: an all-zero stream means every scanline is filter 0 and empty,
