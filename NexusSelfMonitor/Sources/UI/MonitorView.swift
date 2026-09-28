@@ -74,11 +74,7 @@ struct MonitorView: View {
             .sheet(isPresented: $showSettings) { SettingsView() }
             .sheet(isPresented: $showDiagnostics) { DiagnosticsView() }
             .onAppear {
-                if !model.isMonitoring && !model.isStarting && model.hasConsented && model.settings.autoStartEnabled && model.isConfiguredForStreaming {
-                    Task { @MainActor in
-                        await model.start()
-                    }
-                }
+                model.reconcile(.viewAppeared)
             }
         }
     }
@@ -126,6 +122,13 @@ struct MonitorView: View {
 
             if model.isMonitoring {
                 levelMeter
+            }
+
+            if !model.isMonitoring && !model.isStarting && model.status != "Idle" {
+                Text(model.status)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .padding(12)

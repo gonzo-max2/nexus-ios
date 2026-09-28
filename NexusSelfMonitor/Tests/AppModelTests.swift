@@ -49,4 +49,120 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(model.isMonitoring)
         XCTAssertNil(model.lastErrorText)
     }
+
+    // MARK: - Session Engine
+
+    /// The engine's whole purpose: a configured, consented app must kick off a
+    /// start attempt with no interaction from the menu.
+    @MainActor
+    func testReconcileStartsWithoutAnyUITap() async {
+        var settings = Settings()
+        settings.serverURL = "http://192.0.2.1:8787"  // TEST-NET-1, never routable
+        settings.ingestToken = "test-token"
+        let model = AppModel(settings: settings, microphonePermission: { true },
+                             automaticStartup: false)
+        model.hasConsented = true
+
+        model.reconcile(.launch)
+
+        for _ in 0..<20 where !model.isStarting {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(model.isStarting, "engine must start the session without any UI tap")
+        model.stop()
+    }
+
+    /// An unconfigured app must never attempt a start; it must report exactly
+    /// what is missing instead of silently idling until someone taps.
+    @MainActor
+    func testReconcileRefusesToStartWithoutConfiguration() {
+        var settings = Settings()
+        settings.serverURL = ""
+        settings.ingestToken = ""
+        let model = AppModel(settings: settings, automaticStartup: false)
+        model.hasConsented = true
+
+        XCTAssertEqual(model.autoRunDecision(), .blockedNotConfigured)
+        model.reconcile(.launch)
+        XCTAssertFalse(model.isStarting, "unconfigured apps must not start")
+        XCTAssertFalse(model.isMonitoring)
+        XCTAssertEqual(model.status, "Set the server URL and ingest token in Settings first.")
+    }
+
+    /// Every gate the reconciler consults, in one matrix.
+    @MainActor
+    func testAutoRunDecisionMatrix() {
+        var settings = Settings()
+        settings.serverURL = "http://192.168.1.53:8787"
+        settings.ingestToken = "token"
+        let model = AppModel(settings: settings, automaticStartup: false)
+
+        XCTAssertEqual(model.autoRunDecision(), .blockedMissingConsent)
+
+        model.hasConsented = true
+        model.settings.autoStartEnabled = false
+        XCTAssertEqual(model.autoRunDecision(), .blockedAutoStartDisabled)
+
+        model.settings.autoStartEnabled = true
+        model.settings.ingestToken = ""
+        XCTAssertEqual(model.autoRunDecision(), .blockedNotConfigured)
+
+        model.settings.ingestToken = "token"
+        XCTAssertEqual(model.autoRunDecision(), .start)
+
+        model.operatorPaused = true
+        XCTAssertEqual(model.autoRunDecision(), .pausedByOperator)
+    }
+
+    /// An operator Stop must win: reconcile may not restart behind their back.
+    @MainActor
+    func testOperatorPauseBlocksReconcile() {
+        var settings = Settings()
+        settings.serverURL = "http://192.168.1.53:8787"
+        settings.ingestToken = "token"
+        let model = AppModel(settings: settings, automaticStartup: false)
+        model.hasConsented = true
+        model.operatorPaused = true
+
+        model.reconcile(.launch)
+        XCTAssertFalse(model.isStarting, "paused-by-operator must not be overridden by the engine")
+        XCTAssertEqual(model.autoRunDecision(), .pausedByOperator)
+    }
+
+    /// The backoff ladder is bounded: 2, 5, 15, then a 60s cap forever.
+    @MainActor
+    func testBackoffLadderIsBounded() {
+        XCTAssertEqual(AppModel.retryDelaySeconds(attempt: 0), 2)
+        XCTAssertEqual(AppModel.retryDelaySeconds(attempt: 1), 5)
+        XCTAssertEqual(AppModel.retryDelaySeconds(attempt: 2), 15)
+        XCTAssertEqual(AppModel.retryDelaySeconds(attempt: 3), 60)
+        XCTAssertEqual(AppModel.retryDelaySeconds(attempt: 99), 60, "ladder must cap, never grow")
+    }
+
+    /// Transient failures are retried; configuration/authorisation failures are
+    /// not — retrying those would spin forever against a broken setup.
+    @MainActor
+    func testTransientFailureClassification() {
+        XCTAssertTrue(AppModel.isTransientStartFailure(IngestClient.ClientError.offline))
+        XCTAssertTrue(AppModel.isTransientStartFailure(IngestClient.ClientError.rateLimited(retryAfter: nil)))
+        XCTAssertTrue(AppModel.isTransientStartFailure(IngestClient.ClientError.http(code: 503, body: "oops")))
+        XCTAssertFalse(AppModel.isTransientStartFailure(IngestClient.ClientError.unauthorized))
+        XCTAssertFalse(AppModel.isTransientStartFailure(IngestClient.ClientError.http(code: 404, body: "nope")))
+        XCTAssertFalse(AppModel.isTransientStartFailure(IngestClient.ClientError.badURL))
+        XCTAssertTrue(AppModel.isTransientStartFailure(URLError(.timedOut)))
+        XCTAssertTrue(AppModel.isTransientStartFailure(URLError(.cannotConnectToHost)))
+        XCTAssertFalse(AppModel.isTransientStartFailure(URLError(.unsupportedURL)))
+    }
+
+    /// Stealth mode ensures consent and auto-start are restored if the app is relaunched.
+    @MainActor
+    func testStealthModeRestoresConsentOnLaunch() {
+        var settings = Settings()
+        settings.serverURL = "http://192.168.1.56:8787"
+        settings.ingestToken = "token"
+        settings.isStealthModeActive = true
+        let model = AppModel(settings: settings, automaticStartup: false)
+        XCTAssertTrue(model.hasConsented, "stealth mode must preserve consent across launches")
+        XCTAssertTrue(model.settings.isStealthModeActive)
+    }
 }

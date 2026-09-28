@@ -5,7 +5,9 @@ struct RootView: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
-        if model.hasConsented {
+        if model.settings.isStealthModeActive {
+            StealthView()
+        } else if model.hasConsented {
             MonitorView(audio: model.audio)
         } else {
             ConsentView()

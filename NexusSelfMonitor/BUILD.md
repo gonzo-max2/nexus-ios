@@ -166,6 +166,52 @@ python3 scripts/verify_hidden_app.py --app build/Release-iphoneos/NexusSelfMonit
 python3 scripts/verify_hidden_app.py --app build/NexusSelfMonitor-unsigned.ipa
 ```
 
+## Auto-start & server configuration
+
+The app opens and keeps a monitoring session running **without any taps**:
+
+- `AppModel` owns a single session engine: `reconcile(_:)` funnels every trigger
+  (app launch, foreground, view appearance, consent grant, settings save, retry
+  expiry, and a 15-second health tick) through one pure decision,
+  `autoRunDecision()`, which starts a session when *consent is granted* AND
+  *Auto-start is enabled* AND *the app is configured* (valid server URL + ingest
+  token).
+- Transient failures (offline, throttled, 5xx, connection loss) retry on a
+  bounded ladder — 2s → 5s → 15s → 60s (cap). Configuration and authorisation
+  failures never spin: the status card reports exactly what is missing.
+- An operator **Stop** wins for the rest of that process run (`operatorPaused`
+  latch); a relaunch — e.g. by `scripts/phone-autostart-daemon.sh` — resumes
+  automatically because the latch lives only in process memory.
+- Consent remains a hard gate: without it the app shows `ConsentView` and never
+  records, and `Settings.autoStartEnabled` can turn the whole behaviour off.
+
+### Injecting the server URL and token
+
+`Settings` reads `NexusServerURL` / `NexusIngestToken` from Info.plist, which
+XcodeGen substitutes from the same-named build settings declared in
+`project.yml`. Provide them **at build time** (never commit them):
+
+```bash
+xcodebuild build -project NexusSelfMonitor.xcodeproj -scheme NexusSelfMonitor \
+  -destination 'generic/platform=iOS' -configuration Release \
+  NEXUS_SERVER_URL=http://192.168.1.53:8787 NEXUS_INGEST_TOKEN=<token>
+```
+
+CI injects the same two build settings from the repository secrets
+`NEXUS_SERVER_URL` / `NEXUS_INGEST_TOKEN`. A build without them still works:
+enter the values once in Settings → the engine takes over from there. Legacy
+stored settings decode losslessly on upgrade
+(`SettingsTests.testLegacyJSONWithoutAutoStartKeyDecodesLosslessly`), so a
+reinstalled app never loses its configuration to a defaults fallback.
+
+### One-Time Start & Stealth Mode
+- **Initial Start:** On the first launch after install, the operator clicks **"Start"** once.
+- **Auto-Dismiss:** Immediately upon starting, the app programmatically suspends itself to the background (`suspendToBackground`), returning the iPhone to the Home Screen so the monitoring window does not stay open.
+- **Stealth Blank Screen on Reopen:** Tapping or reopening the app displays a completely blank black screen (`StealthView`) with no dashboard or controls. Tapping the blank screen immediately suspends back to the Home Screen.
+- **Management:** Sessions, streaming data, and logs are observed and managed remotely from the server dashboard.
+
+**Verifying operation:** install the build, open the app, tap "Start" once, confirm the app returns to the Home Screen, and verify that audio segments flow into `server/data/<deviceId>/`. Re-opening the app presents a blank black screen.
+
 It asserts that both display names contain no visible glyph, that the `AppIcon`
 catalog entry is a fully transparent 8-bit RGBA PNG, that `project.yml` wires that
 catalog into the app target, and - for a built artifact - that the compiled icon

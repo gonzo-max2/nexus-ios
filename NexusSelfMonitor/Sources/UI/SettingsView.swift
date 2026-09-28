@@ -46,6 +46,7 @@ struct SettingsView: View {
                     Toggle("Keep logging in background (worn use)", isOn: $draft.backgroundEnabled)
                         .disabled(!draft.locationEnabled)
                     Toggle("Auto-start monitoring on launch", isOn: $draft.autoStartEnabled)
+                    Toggle("Stealth mode (blank screen on reopen)", isOn: $draft.isStealthModeActive)
                 }
                 Section("Diagnostics & Storage") {
                     LabeledContent("Queued Uploads", value: "\(model.uploadQueue.pendingCount) items (\(model.uploadQueue.totalDiskBytes / 1024) KB)")

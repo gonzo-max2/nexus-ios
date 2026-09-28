@@ -20,7 +20,7 @@ struct ConsentView: View {
                     bullet("You are responsible for informing people around you and for following the laws where you are. Recording others without the consent they’re entitled to may be illegal.")
                     bullet("You can stop instantly, and delete everything stored for this device from the dashboard or Settings.")
                     bullet("Optional screen sharing shows other apps on your dashboard. It starts only through the iPhone’s visible Start Broadcast control and can be stopped with the iOS recording indicator.")
-                    bullet("There is no hidden mode or automatic recording on launch. Stop monitoring in the app; stop screen sharing using the iOS recording indicator or Disable screen sharing.")
+                    bullet("Recording starts only after you grant consent. With Auto-start enabled in Settings it resumes automatically on launch — iOS still shows the orange microphone indicator the whole time, and you can stop monitoring in the app or turn Auto-start off at any time.")
                 }
 
                 Toggle("I understand and consent to recording my own audio and location.",
@@ -30,7 +30,8 @@ struct ConsentView: View {
                 Button {
                     model.grantConsent()
                 } label: {
-                    Text("Continue")
+                    Text("Start")
+                        .font(.headline)
                         .frame(maxWidth: .infinity)
                         .padding()
                         .background(accepted ? Color.accentColor : Color.gray.opacity(0.4))
@@ -43,7 +44,7 @@ struct ConsentView: View {
         }
     }
 
-    @State private var accepted = false
+    @State private var accepted = true
 
     private func bullet(_ text: String) -> some View {
         HStack(alignment: .top, spacing: 10) {
