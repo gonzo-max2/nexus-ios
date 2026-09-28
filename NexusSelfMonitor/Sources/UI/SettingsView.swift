@@ -12,7 +12,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Server") {
+                Section {
                     TextField("Server URL", text: $draft.serverURL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -20,6 +20,8 @@ struct SettingsView: View {
                     SecureField("Ingest token", text: $draft.ingestToken)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                } header: {
+                    Text("Server")
                 } footer: {
                     Text(draft.ingestToken.isEmpty
                          ? "Required. Ask the operator running the dashboard for this device's token."
